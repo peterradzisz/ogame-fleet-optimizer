@@ -1,0 +1,7 @@
+[toolchain]
+# Pin the stable Rust channel; rustup will install the latest stable that matches.
+# A specific version is intentionally NOT pinned so the project remains portable,
+# while remaining within the "stable" channel.
+channel = "stable"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

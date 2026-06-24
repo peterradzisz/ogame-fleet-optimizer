@@ -1,0 +1,23 @@
+[package]
+name = "ogame_combat"
+version = "0.1.0"
+edition = "2021"
+description = "Rust extension providing OGame combat simulation primitives"
+license = "MIT"
+
+[lib]
+# The compiled library name must match the Python module name (ogame_combat).
+name = "ogame_combat"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.21", features = ["extension-module"] }
+rand = "0.8"
+rand_xoshiro = "0.6"
+serde = { version = "1", features = ["derive"] }
+rayon = "1.10"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

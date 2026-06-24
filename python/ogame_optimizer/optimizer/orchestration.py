@@ -1,0 +1,661 @@
+"""Optimizer orchestration: greedy -> GA -> final validation.
+
+Logs every phase boundary so failures are easy to trace.
+"""
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional
+
+from ogame_optimizer.logging_config import get_logger
+from ogame_optimizer.core.combat import simulate_batch
+from ogame_optimizer.core.fleet import compute_budget, SHIPS_COST, weighted_fleet_value, resource_preference_penalty
+from ogame_optimizer.optimizer.greedy import greedy_optimize
+from ogame_optimizer.optimizer.genetic import genetic_optimize, _drift_bounds_for_seed
+
+
+_log = get_logger("ogame.optimizer.orchestration")
+
+
+@dataclass
+class OptimizationResult:
+    recommended_fleet: Dict[str, int]
+    expected_loss_mean: float
+    expected_loss_stddev: float
+    win_probability: float
+    confidence_interval_95: List[float]
+    sims_run_final: int
+    greedy_baseline_loss: float
+    ga_improvement_pct: float
+    time_elapsed_greedy: float
+    time_elapsed_ga: float
+    total_time: float
+    seed_used: int
+    mode: str = "attack"
+    fleet_value: int = 0
+    fleet_lost_pct: float = 0.0
+    ships_lost_count: int = 0
+    ships_initial_count: int = 0
+    debris_metal: int = 0
+    debris_crystal: int = 0
+    debris_deuterium: int = 0
+    debris_total: int = 0
+    net_profit: int = 0
+    net_profit_pct: float = 0.0
+    recyclers_needed: int = 0
+    recycler_capacity: int = 20000
+    recyclers_cost_metal: int = 0
+    recyclers_cost_crystal: int = 0
+    recyclers_cost_deuterium: int = 0
+    recyclers_cost_total: int = 0
+    fleet_analysis: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    defender_fleet_analysis: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    raw_loss_mean: float = 0.0
+    resource_weights: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    preference_beta: float = 0.05
+    fleet_weighted_value: float = 0.0
+    resource_preference_penalty: float = 0.0
+    resource_preference_match_score: float = 1.0
+
+
+def _validate_inputs(
+    enemy_fleet: Dict[str, int],
+    enemy_defenses: Dict[str, int],
+    budget: int,
+) -> None:
+    if not enemy_fleet and not enemy_defenses:
+        _log.error("Validation failed: no enemy (empty fleet + defenses)")
+        raise ValueError("No enemy to fight: enemy_fleet and enemy_defenses both empty")
+    if budget <= 0:
+        _log.error("Validation failed: budget=%d (must be positive)", budget)
+        raise ValueError("Budget must be positive")
+    cheapest = min(sum(SHIPS_COST[k]) for k in SHIPS_COST)
+    if budget < cheapest:
+        _log.error("Validation failed: budget=%d < cheapest ship cost=%d", budget, cheapest)
+        raise ValueError(
+            f"Budget insufficient for any fleet (need at least {cheapest} for one ship, got {budget})"
+        )
+    _log.debug("Inputs OK: enemy_fleet=%s defenses=%s budget=%d", enemy_fleet, enemy_defenses, budget)
+
+
+def _sensitivity_analysis(
+    fleet: Dict[str, int],
+    enemy_fleet: Dict[str, int],
+    enemy_defenses: Dict[str, int],
+    attacker_tech: tuple,
+    enemy_tech: tuple,
+    base_loss: float,
+    debris_pct: float,
+    deuterium_in_debris: bool,
+    base_seed: int = 42,
+    n_sims: int = 200,
+) -> Dict[str, Dict]:
+    """For each ship in fleet, measure impact of removing it (redistribute to best remaining).
+
+    Returns {ship: {"impact_pct": float, "tag": str, "redistributed_to": str, "loss_breakdown": dict}}.
+
+    Tags:
+    - critical: removing increases losses >20%
+    - important: 5-20% increase
+    - negligible: -5% to +5% change
+    - dead_weight: non-fodder ship where fleet improves without it (<-5%)
+    - fodder: cheap screening ship with negative impact — serves as cannon fodder, not truly dead weight
+    """
+    present_ships = [s for s, c in fleet.items() if c > 0]
+    if len(present_ships) <= 1:
+        return {}
+
+    # Ships that serve as cannon fodder — negative impact is expected, not a flaw
+    FODDER_SHIPS = {"light_fighter", "heavy_fighter", "small_cargo", "large_cargo", "espionage_probe"}
+
+    # Ship value contributions for redistribution target selection
+    ship_values = {s: sum(SHIPS_COST.get(s, (0, 0, 0))) * fleet[s] for s in present_ships}
+
+    # Get baseline per-type losses via single detailed simulation
+    base_per_type = {}
+    try:
+        from ogame_optimizer.core.fast_combat import simulate_combat_fast
+        base_detail = simulate_combat_fast(
+            fleet, enemy_fleet, enemy_defenses, attacker_tech, enemy_tech,
+            seed=base_seed + 60000,
+        )
+        base_survivors = base_detail.get("attacker_survivors", {})
+        base_per_type = {s: fleet.get(s, 0) - base_survivors.get(s, 0) for s in fleet}
+    except Exception:
+        pass
+
+    analysis = {}
+    for idx, ship in enumerate(present_ships):
+        # Redistribute target = highest value remaining ship
+        remaining = {s: v for s, v in ship_values.items() if s != ship}
+        if not remaining:
+            continue
+        target = max(remaining, key=remaining.get)
+
+        # Build variant: remove this ship, add freed budget as target
+        variant = {k: v for k, v in fleet.items() if k != ship}
+        freed_budget = sum(SHIPS_COST.get(ship, (0, 0, 0))) * fleet[ship]
+        target_cost = sum(SHIPS_COST.get(target, (0, 0, 0)))
+        extra_count = 0
+        if target_cost > 0:
+            extra_count = freed_budget // target_cost
+            variant[target] = variant.get(target, 0) + extra_count
+
+        result = simulate_batch(
+            attacker=variant,
+            defender=enemy_fleet,
+            defender_defenses=enemy_defenses,
+            attacker_tech=attacker_tech,
+            defender_tech=enemy_tech,
+            n_sims=n_sims,
+            base_seed=base_seed + 50000 + idx,
+            debris_pct=debris_pct,
+            deuterium_in_debris=deuterium_in_debris,
+        )
+        variant_loss = float(result.get("mean_attacker_loss", base_loss))
+        if base_loss > 0:
+            impact_pct = ((variant_loss - base_loss) / base_loss) * 100
+        elif variant_loss > 0:
+            impact_pct = 999.0  # Fleet had 0 loss, removing this ship causes loss = critical
+        else:
+            impact_pct = 0.0  # Both zero — ship doesn't matter
+
+        # Compute per-type loss breakdown
+        loss_breakdown = {}
+        if base_per_type:
+            try:
+                variant_detail = simulate_combat_fast(
+                    variant, enemy_fleet, enemy_defenses, attacker_tech, enemy_tech,
+                    seed=base_seed + 60000 + idx,
+                )
+                variant_survivors = variant_detail.get("attacker_survivors", {})
+                variant_per_type = {s: variant.get(s, 0) - variant_survivors.get(s, 0) for s in variant}
+                all_types = set(list(base_per_type.keys()) + list(variant_per_type.keys()))
+                for s in all_types:
+                    delta = variant_per_type.get(s, 0) - base_per_type.get(s, 0)
+                    if abs(delta) >= 1:
+                        loss_breakdown[s] = int(delta)
+            except Exception:
+                pass
+
+        # Tagging: fodder ships get "fodder" tag, not "dead_weight"
+        if impact_pct > 20:
+            tag = "critical"
+        elif impact_pct > 5:
+            tag = "important"
+        elif impact_pct < -5:
+            if ship in FODDER_SHIPS:
+                tag = "fodder"
+            else:
+                tag = "dead_weight"
+        else:
+            tag = "negligible"
+
+        analysis[ship] = {
+            "impact_pct": round(impact_pct, 1),
+            "tag": tag,
+            "redistributed_to": target,
+            "extra_count": extra_count,
+            "loss_breakdown": loss_breakdown,
+        }
+        _log.info("  Sensitivity %s: %+.1f%% -> %s (redist->%s +%d)",
+                  ship, impact_pct, tag, target, extra_count)
+
+    return analysis
+
+def _rust_verify(
+    fleet: Dict[str, int],
+    enemy_fleet: Dict[str, int],
+    enemy_defenses: Dict[str, int],
+    attacker_tech: tuple,
+    enemy_tech: tuple,
+    analytical_loss: float,
+    n_sims: int = 3,
+    base_seed: int = 42,
+    max_ships: int = 1000,
+) -> None:
+    """Run real per-unit Rust simulation and log comparison vs analytical.
+
+    Only runs if total fleet size is small enough for per-unit sim to be fast.
+    Logs the comparison but does NOT override analytical results (logging-only for now).
+    """
+    total_ships = sum(fleet.values()) + sum(enemy_fleet.values()) + sum(enemy_defenses.values())
+    if total_ships > max_ships:
+        _log.info("  Rust verify: SKIPPED (fleet %d ships > limit %d)", total_ships, max_ships)
+        return
+
+    try:
+        from ogame_optimizer.core.combat import (
+            _normalize_ship_keys, _strip_unknown_for_rust,
+            _normalize_defense_keys, _to_tech_tuple,
+        )
+        from ogame_optimizer import _ogame_combat
+
+        result = _ogame_combat.simulate_batch_py(
+            _normalize_ship_keys(_strip_unknown_for_rust(fleet)),
+            _normalize_ship_keys(_strip_unknown_for_rust(enemy_fleet)),
+            _normalize_defense_keys(enemy_defenses),
+            _to_tech_tuple(attacker_tech),
+            _to_tech_tuple(enemy_tech),
+            n_sims,
+            base_seed,
+        )
+        rust_loss = float(result.get("mean_attacker_loss", 0))
+        rust_win = float(result.get("win_probability", 0))
+        rust_stddev = float(result.get("stddev_attacker_loss", 0))
+
+        _log.info("  Rust verify (%d sims, %d ships): loss=%.0f win=%.0f%% stddev=%.0f",
+                  n_sims, total_ships, rust_loss, rust_win * 100, rust_stddev)
+        _log.info("  Analytical:      loss=%.0f", analytical_loss)
+
+        if analytical_loss > 0:
+            diff_pct = abs(rust_loss - analytical_loss) / analytical_loss * 100
+            if diff_pct > 50:
+                _log.warning("  *** DISCREPANCY: Rust vs analytical differ by %.0f%%! ***", diff_pct)
+            else:
+                _log.info("  Agreement: within %.0f%%", diff_pct)
+        elif rust_loss > 0:
+            _log.warning("  *** DISCREPANCY: Analytical says 0 loss but Rust says %.0f! ***", rust_loss)
+        else:
+            _log.info("  Agreement: both predict ~0 loss")
+    except Exception as e:
+        _log.warning("  Rust verify: FAILED - %s", str(e)[:100])
+
+
+
+def optimize(
+    enemy_fleet: Dict[str, int],
+    enemy_defenses: Optional[Dict[str, int]] = None,
+    enemy_tech: tuple = (0, 0, 0),
+    attacker_tech: tuple = (0, 0, 0),
+    budget_multiplier: float = 1.0,
+    mode: str = "attack",
+    base_seed: int = 42,
+    ga_time_budget: float = 5.0,
+    final_sims: int = 1000,
+    exclude_ships=None,
+    seed_fleet=None,
+    debris_pct: float = 0.30,
+    deuterium_in_debris: bool = False,
+    optimization_target: str = "maximize_profit",
+    hyperspace_tech: int = 11,
+    resource_weights: tuple[float, float, float] = (2.0, 1.0, 1.0),
+    preference_beta: float = 0.05,
+    collector_class: bool = False,
+) -> OptimizationResult:
+    enemy_defenses = enemy_defenses or {}
+    t0 = time.time()
+    _log.info("=== OPTIMIZE START mode=%s multiplier=%s seed=%d ===", mode, budget_multiplier, base_seed)
+    _log.info("Enemy fleet: %s", enemy_fleet)
+    _log.info("Enemy defenses: %s", enemy_defenses)
+    _log.info("Techs: attacker=%s defender=%s", attacker_tech, enemy_tech)
+
+    budget = compute_budget(enemy_fleet, enemy_defenses, budget_multiplier)
+    _log.info("Budget computed: %d (multiplier=%s)", budget, budget_multiplier)
+    # In profit mode, effective loss = raw_loss * (1 - debris_pct)
+    # because debris_pct of your losses are recyclable
+    _loss_scale = (1.0 - debris_pct) if optimization_target == "maximize_profit" else 1.0
+    _log.info("Target: %s (loss_scale=%.2f, debris_pct=%.0f%%)", optimization_target, _loss_scale, debris_pct * 100)
+    _log.info("Resource weights: M=%.2f C=%.2f D=%.2f (composition penalty, beta=%.2f)",
+              resource_weights[0], resource_weights[1], resource_weights[2], preference_beta)
+    _validate_inputs(enemy_fleet, enemy_defenses, budget)
+
+    # Phase A: greedy (or use provided seed_fleet for refinement)
+    if seed_fleet:
+        _log.info("--- Phase A: Using provided seed_fleet (refinement) ---")
+        from ogame_optimizer.optimizer.greedy import GreedyResult
+        greedy_result = GreedyResult(fleet=dict(seed_fleet), estimated_loss=0.0, time_elapsed=0.0)
+        # Evaluate it to get baseline loss
+        from ogame_optimizer.optimizer.greedy import _evaluate_single
+        greedy_result.estimated_loss = _evaluate_single(
+            seed_fleet, enemy_fleet, enemy_defenses, enemy_tech, attacker_tech, base_seed
+        )
+    else:
+        _log.info("--- Phase A: Greedy (budget=1.0s) ---")
+        greedy_result = greedy_optimize(
+            enemy_fleet=enemy_fleet,
+            enemy_defenses=enemy_defenses,
+            enemy_tech=enemy_tech,
+            attacker_tech=attacker_tech,
+            budget=budget,
+            mode=mode,
+            seed=base_seed,
+            time_budget_s=1.0,
+        )
+    t1 = time.time()
+    _log.info("Phase A done in %.2fs: seed_fleet=%s loss=%.0f",
+              t1 - t0, greedy_result.fleet, greedy_result.estimated_loss)
+
+    # Phase B: Multi-START + multi-round GA
+    # Try different fleet compositions (greedy LF-heavy, all-cruiser, all-BC, balanced)
+    # Then refine the best one with increasing fidelity
+    _log.info("--- Phase B: Multi-start GA (budget=%.1fs) ---", ga_time_budget)
+
+    # Zero out excluded ships from greedy seed
+    if exclude_ships:
+        _log.info("Excluding ships from optimization: %s", exclude_ships)
+        for s in exclude_ships:
+            if s in greedy_result.fleet:
+                greedy_result.fleet[s] = 0
+        greedy_result.fleet = {k: v for k, v in greedy_result.fleet.items() if v > 0}
+
+    from ogame_optimizer.core.fleet import SHIPS_COST, fleet_value as _fv2
+    from ogame_optimizer.optimizer.genetic import GAConfig, _drift_bounds_for_seed
+    from ogame_optimizer.optimizer.progressive_seeds import generate_progressive_seeds
+
+    # Generate data-driven starting compositions via progressive seeding
+    # Phase 0: pure single-type fleets (all-BC, all-Destroyer, etc.)
+    # Phase 1: 50/50 two-type combos of the best singles
+    _log.info("--- Progressive seeding (budget=%d) ---", budget)
+    progressive = generate_progressive_seeds(
+        enemy_fleet=enemy_fleet,
+        enemy_defenses=enemy_defenses,
+        budget=budget,
+        attacker_tech=attacker_tech,
+        enemy_tech=enemy_tech,
+        debris_pct=debris_pct,
+        deuterium_in_debris=deuterium_in_debris,
+        exclude_ships=exclude_ships,
+        base_seed=base_seed,
+    )
+
+    seeds = {}
+    # Always keep greedy as a seed (different algorithm - counter-ratio based)
+    if greedy_result.fleet:
+        seeds["greedy"] = greedy_result.fleet
+    # Add progressive seeds (named by their composition)
+    for i, prog_fleet in enumerate(progressive):
+        name = "prog_" + "_".join(sorted(prog_fleet.keys())[:2])
+        seeds[name] = prog_fleet
+    # Remove any seed that's empty
+    seeds = {name: s for name, s in seeds.items() if s}
+
+    _log.info("Multi-start seeds: %s", {k: f"{sum(v.values())} ships" for k, v in seeds.items()})
+
+    # Track global best
+    global_best_fleet = dict(greedy_result.fleet)
+    # Validate greedy baseline with proper simulation count (not single-sim artifact)
+    greedy_validation = simulate_batch(
+        attacker=greedy_result.fleet,
+        defender=enemy_fleet,
+        defender_defenses=enemy_defenses,
+        attacker_tech=attacker_tech,
+        defender_tech=enemy_tech,
+        n_sims=200,
+        base_seed=base_seed + 7777,
+    )
+    # Apply resource-preference penalty (composition objective).
+    _greedy_penalty = resource_preference_penalty(greedy_result.fleet, resource_weights, preference_beta)
+    global_best_loss = float(greedy_validation.get("mean_attacker_loss", greedy_result.estimated_loss)) * _loss_scale + _greedy_penalty
+    _log.info("Baseline (greedy, validated 200 sims): eff_loss=%.0f (raw=%.0f + penalty=%.0f) win=%.0f%%",
+              global_best_loss,
+              float(greedy_validation.get("mean_attacker_loss", greedy_result.estimated_loss)) * _loss_scale,
+              _greedy_penalty,
+              float(greedy_validation.get("win_probability", 0)) * 100)
+
+    # Phase B1: Quick exploration from each seed (parallel strategies)
+    explore_time = min(ga_time_budget * 0.15, 2.0)  # 15% of budget per seed
+    for seed_name, seed_fleet in seeds.items():
+        if explore_time < 0.5:
+            continue
+        seed_drift = _drift_bounds_for_seed(seed_fleet, total_fleet_count=sum(seed_fleet.values()))
+        if exclude_ships:
+            for s in exclude_ships:
+                seed_drift[s] = (0, 0)
+
+        _log.info("  Start '%s': %.1fs explore", seed_name, explore_time)
+        ga_round = genetic_optimize(
+            seed_fleet=seed_fleet,
+            enemy_fleet=enemy_fleet,
+            enemy_defenses=enemy_defenses,
+            enemy_tech=enemy_tech,
+            attacker_tech=attacker_tech,
+            budget=budget,
+            mode=mode,
+            config=GAConfig(time_budget_seconds=explore_time, sims_per_eval=10, population_size=20, mutation_rate=0.20),
+            base_seed=base_seed + abs(hash(seed_name)) % 9999,
+            drift_bounds=seed_drift,
+        )
+
+        # Quick validate
+        validation = simulate_batch(
+            attacker=ga_round.best_fleet,
+            defender=enemy_fleet,
+            defender_defenses=enemy_defenses,
+            attacker_tech=attacker_tech,
+            defender_tech=enemy_tech,
+            n_sims=100,
+            base_seed=base_seed + 7777,
+        )
+        _round_penalty = resource_preference_penalty(ga_round.best_fleet, resource_weights, preference_beta)
+        validated_loss = float(validation.get("mean_attacker_loss", float("inf"))) * _loss_scale + _round_penalty
+
+        if validated_loss < global_best_loss:
+            global_best_fleet = dict(ga_round.best_fleet)
+            global_best_loss = validated_loss
+            _log.info("  Start '%s': IMPROVED to %.0f (raw=%.0f + penalty=%.0f)", seed_name, global_best_loss, float(validation.get("mean_attacker_loss", 0)) * _loss_scale, _round_penalty)
+        else:
+            _log.info("  Start '%s': %.0f (no improvement)", seed_name, validated_loss)
+
+    # Phase B2: Refine the best seed with increasing fidelity
+    best_drift = _drift_bounds_for_seed(global_best_fleet, total_fleet_count=sum(global_best_fleet.values()))
+    if exclude_ships:
+        for s in exclude_ships:
+            best_drift[s] = (0, 0)
+
+    refine_time = ga_time_budget - explore_time * len(seeds)
+    rounds = [
+        ("refine", refine_time * 0.50, 50, 0.10),
+        ("polish", refine_time * 0.50, 100, 0.05),
+    ]
+    for rname, t_alloc, sims_eval, mut_rate in rounds:
+        if t_alloc < 0.5:
+            continue
+        _log.info("  Round '%s': %.1fs, %d sims/eval", rname, t_alloc, sims_eval)
+        ga_round = genetic_optimize(
+            seed_fleet=global_best_fleet,
+            enemy_fleet=enemy_fleet,
+            enemy_defenses=enemy_defenses,
+            enemy_tech=enemy_tech,
+            attacker_tech=attacker_tech,
+            budget=budget,
+            mode=mode,
+            config=GAConfig(time_budget_seconds=t_alloc, sims_per_eval=sims_eval, population_size=30, mutation_rate=mut_rate),
+            base_seed=base_seed + abs(hash(rname)) % 9999,
+            drift_bounds=best_drift,
+        )
+
+        validation = simulate_batch(
+            attacker=ga_round.best_fleet,
+            defender=enemy_fleet,
+            defender_defenses=enemy_defenses,
+            attacker_tech=attacker_tech,
+            defender_tech=enemy_tech,
+            n_sims=200,
+            base_seed=base_seed + 7777,
+            debris_pct=debris_pct,
+            deuterium_in_debris=deuterium_in_debris,
+        )
+        _round_penalty = resource_preference_penalty(ga_round.best_fleet, resource_weights, preference_beta)
+        validated_loss = float(validation.get("mean_attacker_loss", float("inf"))) * _loss_scale + _round_penalty
+
+        if validated_loss < global_best_loss:
+            global_best_fleet = dict(ga_round.best_fleet)
+            global_best_loss = validated_loss
+            _log.info("  Round '%s': IMPROVED to %.0f (raw=%.0f + penalty=%.0f)", rname, global_best_loss, float(validation.get("mean_attacker_loss", 0)) * _loss_scale, _round_penalty)
+        else:
+            _log.info("  Round '%s': no improvement", rname)
+
+    class _Compat:
+        pass
+    ga_result = _Compat()
+    ga_result.best_fleet = global_best_fleet
+    ga_result.best_fitness = -global_best_loss
+
+    t2 = time.time()
+    _log.info("Phase B done in %.2fs: best_loss=%.0f", t2 - t1, global_best_loss)
+
+    # Strict budget enforcement: proportional scale if over
+    from ogame_optimizer.core.fleet import fleet_value as _fv
+    _fleet_val = _fv(ga_result.best_fleet)
+    if _fleet_val > budget and _fleet_val > 0:
+        _log.warning("Fleet over budget: %d > %d, scaling down", _fleet_val, budget)
+        scale = budget / _fleet_val
+        _fleet = {k: max(0, int(v * scale)) for k, v in ga_result.best_fleet.items() if int(v * scale) > 0}
+        ga_result.best_fleet = _fleet
+        _log.info("Budget scaled to: %d", _fv(ga_result.best_fleet))
+
+    # Final validation
+    _log.info("--- Final validation (%d sims) ---", final_sims)
+    final = simulate_batch(
+        attacker=ga_result.best_fleet,
+        defender=enemy_fleet,
+        defender_defenses=enemy_defenses,
+        attacker_tech=attacker_tech,
+        defender_tech=enemy_tech,
+        n_sims=final_sims,
+        base_seed=base_seed + 9999,
+        debris_pct=debris_pct,
+        deuterium_in_debris=deuterium_in_debris,
+    )
+    t3 = time.time()
+    _log.info("Validation done in %.2fs: mean_loss=%.0f stddev=%.0f win_prob=%.3f",
+              t3 - t2,
+              float(final.get("mean_attacker_loss", 0)),
+              float(final.get("stddev_attacker_loss", 0)),
+              float(final.get("win_probability", 0)))
+
+    mean_loss_raw = float(final.get("mean_attacker_loss", 0))
+    # Apply resource-preference tiebreaker to displayed loss so it matches what
+    # the GA actually optimised. The raw mean_loss (without *_loss_scale) is
+    # preserved as raw_loss_mean for transparency.
+    _best_penalty = resource_preference_penalty(ga_result.best_fleet, resource_weights, preference_beta)
+    mean_loss = mean_loss_raw * _loss_scale + _best_penalty
+    stddev_loss = float(final.get("stddev_attacker_loss", 0))
+    win_prob = float(final.get("win_probability", 0.0))
+    stderr = stddev_loss / max(1, final_sims ** 0.5)
+    ci = [mean_loss - 1.96 * stderr, mean_loss + 1.96 * stderr]
+
+    improvement_pct = 0.0
+    if greedy_result.estimated_loss > 0:
+        improvement_pct = (
+            (greedy_result.estimated_loss * _loss_scale - mean_loss) / max(greedy_result.estimated_loss * _loss_scale, 1) * 100.0
+        )
+
+    _log.info("=== OPTIMIZE DONE total=%.2fs greedy=%.2fs ga=%.2fs win_prob=%.3f improvement=%.1f%% ===",
+              t3 - t0, t1 - t0, t2 - t1, win_prob, improvement_pct)
+
+    from ogame_optimizer.core.fleet import fleet_value as _fv3
+    _final_fv = _fv3(ga_result.best_fleet)
+    _final_wv = weighted_fleet_value(ga_result.best_fleet, resource_weights)
+    # Compute match score (0..1) for the response: 1.0 = perfect preference match
+    _wM, _wC, _wD = resource_weights
+    _max_w = max(_wM, _wC, _wD)
+    if _max_w > 1.0 and _final_fv > 0:
+        _weighted = weighted_fleet_value(ga_result.best_fleet, resource_weights)
+        _ratio = _weighted / _final_fv
+        _match_score = max(0.0, min(1.0, (_ratio - 1.0) / (_max_w - 1.0)))
+    else:
+        _match_score = 1.0
+    _lost_pct = (mean_loss_raw / _final_fv * 100) if _final_fv > 0 else 0
+
+    recycler_cap = int(20000 * (1 + hyperspace_tech * 0.05) * (1.25 if collector_class else 1.0))
+    debris_total_val = int(final.get("debris_total", 0))
+    recyclers = (debris_total_val + recycler_cap - 1) // recycler_cap if recycler_cap > 0 else 0
+    # Recycler build cost (M/C/D) for the needed count
+    _rec_cost = SHIPS_COST.get("recycler", (10000, 6000, 2000))
+    recyclers_cost_metal = recyclers * _rec_cost[0]
+    recyclers_cost_crystal = recyclers * _rec_cost[1]
+    recyclers_cost_deuterium = recyclers * _rec_cost[2]
+    recyclers_cost_total = recyclers_cost_metal + recyclers_cost_crystal + recyclers_cost_deuterium
+
+    # Sensitivity analysis: which ships are critical vs dead weight?
+    _log.info("--- Sensitivity analysis ---")
+    fleet_analysis = _sensitivity_analysis(
+        fleet=ga_result.best_fleet,
+        enemy_fleet=enemy_fleet,
+        enemy_defenses=enemy_defenses,
+        attacker_tech=attacker_tech,
+        enemy_tech=enemy_tech,
+        base_loss=mean_loss_raw,
+        debris_pct=debris_pct,
+        deuterium_in_debris=deuterium_in_debris,
+        base_seed=base_seed,
+    )
+
+    # Compute per-ship survival rates (for shield marker in UI) using the
+    # batch's averaged per-type survivors. The single-seed fast-combat call
+    # was unstable (one sim != 500-sim mean), and we now have averaged
+    # survivors in the final batch result.
+    defender_fleet_analysis: Dict[str, Dict[str, float]] = {}
+    try:
+        _atk_surv_mean = final.get("attacker_survivors_mean", {}) or {}
+        _def_surv_mean = final.get("defender_survivors_mean", {}) or {}
+        _ships_lost = 0
+        _ships_init = 0
+        for _ship, _count in ga_result.best_fleet.items():
+            if _count > 0:
+                _surv = float(_atk_surv_mean.get(_ship, 0))
+                _surv_pct = round((_surv / _count) * 100, 1)
+                if _ship not in fleet_analysis:
+                    fleet_analysis[_ship] = {}
+                fleet_analysis[_ship]["survival_pct"] = _surv_pct
+                fleet_analysis[_ship]["surviving_count"] = round(_surv)
+                _ships_init += _count
+                _ships_lost += max(0, _count - round(_surv))
+        # Build defender analysis: per-ship surviving count and survival pct
+        for _ship, _count in enemy_fleet.items():
+            if _count > 0:
+                _surv = float(_def_surv_mean.get(_ship, 0))
+                _surv_pct = round((_surv / _count) * 100, 1)
+                defender_fleet_analysis[_ship] = {
+                    "count": _count,
+                    "surviving_count": round(_surv),
+                    "survival_pct": _surv_pct,
+                }
+    except Exception:
+        pass
+
+    return OptimizationResult(
+        recommended_fleet=ga_result.best_fleet,
+        fleet_value=_final_fv,
+        fleet_lost_pct=_lost_pct,
+        ships_lost_count=_ships_lost,
+        ships_initial_count=_ships_init,
+        debris_metal=int(final.get("debris_metal", 0)),
+        net_profit=int(final.get("debris_total", 0)) - int(mean_loss_raw),
+        net_profit_pct=((final.get("debris_total", 0) - mean_loss_raw) / _final_fv * 100) if _final_fv > 0 else 0,
+        recyclers_needed=recyclers,
+        recycler_capacity=recycler_cap,
+        recyclers_cost_metal=recyclers_cost_metal,
+        recyclers_cost_crystal=recyclers_cost_crystal,
+        recyclers_cost_deuterium=recyclers_cost_deuterium,
+        recyclers_cost_total=recyclers_cost_total,
+        debris_crystal=int(final.get("debris_crystal", 0)),
+        debris_deuterium=int(final.get("debris_deuterium", 0)),
+        debris_total=int(final.get("debris_total", 0)),
+        raw_loss_mean=mean_loss_raw,
+        resource_weights=tuple(resource_weights),
+        preference_beta=preference_beta,
+        fleet_weighted_value=_final_wv,
+        resource_preference_penalty=_best_penalty,
+        resource_preference_match_score=_match_score,
+        expected_loss_mean=mean_loss,
+        expected_loss_stddev=stddev_loss,
+        win_probability=win_prob,
+        confidence_interval_95=ci,
+        sims_run_final=final_sims,
+        greedy_baseline_loss=float(greedy_result.estimated_loss),
+        ga_improvement_pct=improvement_pct,
+        time_elapsed_greedy=t1 - t0,
+        time_elapsed_ga=t2 - t1,
+        total_time=t3 - t0,
+        seed_used=base_seed,
+        mode=mode,
+        fleet_analysis=fleet_analysis,
+        defender_fleet_analysis=defender_fleet_analysis,
+    )
+
+
+__all__ = ["optimize", "OptimizationResult"]

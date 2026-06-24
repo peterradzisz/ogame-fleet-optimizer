@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+
+# Rust
+target/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+*.dll
+*.pyd
+!python/ogame_optimizer/_ogame_combat*.pyd
+
+# Logs
+*.log
+logs/
+.omo/
+python/ogame_optimizer/ogame_combat.pdb

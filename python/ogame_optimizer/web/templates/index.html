@@ -1,0 +1,225 @@
+{% extends "base.html" %}
+{% block title %}OGame Fleet Optimizer{% endblock %}
+{% block content %}
+  <fieldset>
+    <legend>Paste Fleet/Defenses (optional, fills fields below)</legend>
+    <label>Fleet
+      <textarea id="paste-fleet" rows="8" placeholder="Paste OGame fleet here, e.g. Light Fighter / 5,772 / Cruiser / 1,709"></textarea>
+    </label>
+    <label>Defenses
+      <textarea id="paste-defenses" rows="6" placeholder="Paste OGame defenses here, e.g. Rocket Launcher / 500 / Large Shield Dome / 1"></textarea>
+    </label>
+    <button type="button" id="parse-btn" class="btn-secondary">Parse and fill form</button>
+    <div id="parse-status" class="parse-status"></div>
+  </fieldset>
+
+<form id="optimize-form" class="form">
+  <fieldset class="mode-toggle">
+    <legend>Mode</legend>
+    <label><input type="radio" name="mode" value="attack" checked> Attack</label>
+    <label><input type="radio" name="mode" value="defend"> Defend</label>
+  </fieldset>
+  <fieldset>
+    <legend>Enemy Fleet</legend>
+    <div class="grid">
+      <label>Light Fighter<input type="number" name="light_fighter" min="0" value="0"></label>
+      <label>Heavy Fighter<input type="number" name="heavy_fighter" min="0" value="0"></label>
+      <label>Cruiser<input type="number" name="cruiser" min="0" value="0"></label>
+      <label>Battleship<input type="number" name="battleship" min="0" value="0"></label>
+      <label>Battlecruiser<input type="number" name="battlecruiser" min="0" value="0"></label>
+      <label>Bomber<input type="number" name="bomber" min="0" value="0"></label>
+      <label>Destroyer<input type="number" name="destroyer" min="0" value="0"></label>
+      <label>Deathstar<input type="number" name="deathstar" min="0" value="0"></label>
+      <label>Small Cargo<input type="number" name="small_cargo" min="0" value="0"></label>
+      <label>Large Cargo<input type="number" name="large_cargo" min="0" value="0"></label>
+      <label>Espionage Probe<input type="number" name="espionage_probe" min="0" value="0"></label>
+      <label>Reaper<input type="number" name="reaper" min="0" value="0"></label>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Enemy Defenses</legend>
+    <div class="grid">
+      <label>Rocket Launcher<input type="number" name="rocket_launcher" min="0" value="0"></label>
+      <label>Light Laser<input type="number" name="light_laser" min="0" value="0"></label>
+      <label>Heavy Laser<input type="number" name="heavy_laser" min="0" value="0"></label>
+      <label>Gauss Cannon<input type="number" name="gauss_cannon" min="0" value="0"></label>
+      <label>Ion Cannon<input type="number" name="ion_cannon" min="0" value="0"></label>
+      <label>Plasma Turret<input type="number" name="plasma_turret" min="0" value="0"></label>
+      <label>Small Shield Dome<input type="number" name="small_shield_dome" min="0" value="0"></label>
+      <label>Large Shield Dome<input type="number" name="large_shield_dome" min="0" value="0"></label>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Tech Levels</legend>
+    <div class="tech-grid">
+      <div>
+        <h3>Your Tech</h3>
+        <label>Weapon<input type="number" name="attacker_weapon" min="0" value="0"></label>
+        <label>Shield<input type="number" name="attacker_shield" min="0" value="0"></label>
+        <label>Armor<input type="number" name="attacker_armor" min="0" value="0"></label>
+      </div>
+      <div>
+        <h3>Enemy Tech</h3>
+        <label>Weapon<input type="number" name="defender_weapon" min="0" value="0"></label>
+        <label>Shield<input type="number" name="defender_shield" min="0" value="0"></label>
+        <label>Armor<input type="number" name="defender_armor" min="0" value="0"></label>
+      </div>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Parameters</legend>
+    <div class="params-grid">
+      <label>Budget Multiplier
+        <select name="budget_multiplier">
+          <option value="0.1">0.1X</option>
+          <option value="0.2">0.2X</option>
+          <option value="0.3">0.3X</option>
+          <option value="0.4">0.4X</option>
+          <option value="0.5">0.5X</option>
+          <option value="0.6">0.6X</option>
+          <option value="0.7">0.7X</option>
+          <option value="0.8">0.8X</option>
+          <option value="0.9">0.9X</option>
+          <option value="1.0" selected>1.0X</option>
+          <option value="1.1">1.1X</option>
+          <option value="1.2">1.2X</option>
+          <option value="1.3">1.3X</option>
+          <option value="1.4">1.4X</option>
+          <option value="1.5">1.5X</option>
+          <option value="2.0">2.0X</option>
+          <option value="2.5">2.5X</option>
+          <option value="3.0">3.0X</option>
+          <option value="4.0">4.0X</option>
+          <option value="5.0">5.0X</option>
+        </select>
+      </label>
+      <label>Seed (optional)<input type="number" name="seed" placeholder="42"></label>
+      <label>GA Time (seconds)<input type="number" id="ga_time" value="5" min="1" max="60"></label>
+      <label>Final Sims<input type="number" id="final_sims" value="500" min="100" max="5000" step="100"></label>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Exclude Ships from Recommendation (check to exclude)</legend>
+    <div class="exclude-grid" id="exclude-ships">
+      <label class="checkbox-label"><input type="checkbox" name="exclude" value="deathstar" checked> Deathstar</label>
+      <label class="checkbox-label"><input type="checkbox" name="exclude" value="destroyer"> Destroyer</label>
+      <label class="checkbox-label"><input type="checkbox" name="exclude" value="bomber" checked> Bomber</label>
+      <label class="checkbox-label"><input type="checkbox" name="exclude" value="battlecruiser"> Battlecruiser</label>
+      <label class="checkbox-label"><input type="checkbox" name="exclude" value="battleship"> Battleship</label>
+      <label class="checkbox-label"><input type="checkbox" name="exclude" value="cruiser"> Cruiser</label>
+      <label class="checkbox-label"><input type="checkbox" name="exclude" value="heavy_fighter"> Heavy Fighter</label>
+      <label class="checkbox-label"><input type="checkbox" name="exclude" value="light_fighter"> Light Fighter</label>
+      <label class="checkbox-label"><input type="checkbox" name="exclude" value="pathfinder"> Pathfinder</label>
+      <label class="checkbox-label"><input type="checkbox" name="exclude" value="recycler" checked> Recycler</label>
+      <label class="checkbox-label"><input type="checkbox" name="exclude" value="reaper"> Reaper</label>
+      <label class="checkbox-label"><input type="checkbox" name="exclude" value="small_cargo"> Small Cargo</label>
+      <label class="checkbox-label"><input type="checkbox" name="exclude" value="large_cargo"> Large Cargo</label>
+      <label class="checkbox-label"><input type="checkbox" name="exclude" value="espionage_probe"> Espionage Probe</label>
+    </div>
+  </fieldset>
+
+
+  <fieldset>
+    <legend>Server Settings</legend>
+    <div class="params-grid">
+      <label>Debris Field %
+        <select id="debris_pct">
+          <option value="0.30">30% (standard)</option>
+          <option value="0.40">40%</option>
+          <option value="0.50">50%</option>
+          <option value="0.60">60%</option>
+          <option value="0.70">70%</option>
+          <option value="0.80" selected>80%</option>
+          <option value="0.90">90%</option>
+          <option value="1.00">100%</option>
+        </select>
+      </label>
+      <label class="checkbox-label"><input type="checkbox" id="deut_in_debris" checked> Deuterium in debris</label>
+      <label>Hyperspace Tech<input type="number" id="hyperspace_tech" value="11" min="0" max="30"></label>
+      <label class="checkbox-label"><input type="checkbox" id="collector_class"> Collector class (+25%% cargo)</label>
+      <label>Optimize for
+        <select id="optimization_target">
+          <option value="minimize_loss">Minimize Loss</option>
+          <option value="maximize_profit" selected>Maximize Profit (80%% debris)</option>
+        </select>
+      </label>
+      <fieldset class="resource-weights">
+        <legend>Resource priority (soft tiebreaker)</legend>
+        <div class="resource-weights-row">
+          <label class="resource-weight-label">Metal
+            <input type="number" id="weight_m" min="0" max="10" step="0.1" value="2.0">
+          </label>
+          <label class="resource-weight-label">Crystal
+            <input type="number" id="weight_c" min="0" max="10" step="0.1" value="1.0">
+          </label>
+          <label class="resource-weight-label">Deuterium
+            <input type="number" id="weight_d" min="0" max="10" step="0.1" value="1.0">
+          </label>
+          <button type="button" id="reset-weights" class="btn-secondary" style="margin-top:1.2rem">Reset 1:1:1</button>
+        </div>
+        <div class="alpha-slider-row">
+          <label class="alpha-slider-label" for="preference_beta">
+            Composition bias (β):
+            <span id="preference_beta_value" class="alpha-slider-value">0.05</span>
+          </label>
+          <input type="range" id="preference_beta" min="0" max="1" step="0.05" value="0.05">
+          <div class="alpha-slider-ticks">
+            <span>0 (off)</span>
+            <span>0.15 (moderate)</span>
+            <span>0.50+ (strong)</span>
+          </div>
+        </div>
+        <p class="resource-weights-hint">
+          Higher weight = prefer ships heavy in that resource when combat is tied.
+          β adds a synthetic resource penalty to non-matching fleets, so the optimizer actually picks metal-heavy ships (LF, Cruiser) over destroyer-heavy ones. 0 disables it entirely. 0.05-0.15 is mild; 0.20+ is strong.
+          Budget ceiling stays raw — all recommendations remain buildable.
+          Default 2:1:1 @ β=0.05 helps if you're overflowing with metal.
+        </p>
+      </fieldset>
+    </div>
+  </fieldset>
+
+  <div class="button-row">
+    <button type="submit" class="btn-primary" id="optimize-btn">Optimize</button>
+    <button type="button" class="btn-secondary" id="refine-btn" disabled>Refine (use result as seed)</button>
+    <span id="spinner" class="spinner hidden">Working...</span>
+    <span id="refine-info" class="refine-info hidden"></span>
+  </div>
+</form>
+
+<section id="results" class="results hidden">
+  <h2>Results</h2>
+  <div id="error" class="error hidden"></div>
+  <div id="metrics"></div>
+  <div class="fleet-tables">
+    <div class="fleet-table-col">
+      <h3>Recommended Fleet</h3>
+      <div id="fleet-legend" class="fleet-legend hidden">
+        <span class="fleet-legend-item"><span class="fleet-legend-dot critical"></span> Critical — removing increases losses significantly</span>
+        <span class="fleet-legend-item"><span class="fleet-legend-dot deadweight"></span> Dead weight — fleet performs better without it</span>
+        <span class="fleet-legend-item"><span class="fleet-legend-dot fodder"></span> Fodder — cannon fodder, absorbs enemy fire to protect valuable ships</span>
+      </div>
+      <table id="fleet-table">
+        <thead><tr><th>Ship</th><th>Count</th><th>Impact %</th><th>Surviving (after 6 rounds)</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="fleet-table-col">
+      <h3>Defender Fleet (Enemy)</h3>
+      <div id="defender-fleet-summary" class="defender-summary"></div>
+      <table id="defender-fleet-table">
+        <thead><tr><th>Ship</th><th>Count</th><th>Surviving (after 6 rounds)</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/app.js?v=20260623a"></script>
+{% endblock %}

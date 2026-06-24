@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}OGame Fleet Auto-Optimizer{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css?v=20260622e">
+</head>
+<body>
+  <header class="topbar">
+    <h1>OGame Fleet Auto-Optimizer</h1>
+    <nav>
+      <a href="/">Optimizer</a>
+      <a href="/api/ships" target="_blank">Ships</a>
+      <a href="/api/defenses" target="_blank">Defenses</a>
+      <a href="/docs" target="_blank">API Docs</a>
+    </nav>
+  </header>
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="footer">
+    <small>OGame fleet optimizer - 11 ships, 8 defenses, dual-mode (attack/defend), Rust combat core</small>
+  <small class="version-badge">v20260622e</small>
+  </footer>
+  {% block scripts %}{% endblock %}
+</body>
+</html>
