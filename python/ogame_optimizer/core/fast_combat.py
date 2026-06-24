@@ -214,7 +214,13 @@ def _make_side(fleet: Dict[str, int], defenses: Dict[str, int], tech: Tuple[int,
 
 
 def _fire(attacker_side: dict, defender_side: dict, rng: random.Random):
-    """Fire with rapidfire: ships with RF against fodder types get extra shots.
+    """Grouped fire: all attacker types' damage to each defender type is
+    aggregated BEFORE resolving shields and hull.
+
+    This eliminates the sequential fire ordering bias where attacker type A
+    depletes defender shields and attacker type B fires through the gap.
+    Instead, all incoming damage is summed per defender type, then resolved
+    in one pass: shields absorb first, overflow to hull.
 
     Rapidfire model: if ship A has RF=N against type B, and fraction of B
     in defenders is f, then A's expected shot multiplier is
@@ -224,74 +230,74 @@ def _fire(attacker_side: dict, defender_side: dict, rng: random.Random):
     if total_def_count == 0:
         return
 
-    # Pre-compute fractions
+    # Pre-compute fractions (target distribution proportions)
     fractions = {}
     for k, d in defender_side.items():
         fractions[k] = d["count"] / total_def_count if d["count"] > 0 else 0.0
 
+    # Pre-compute rapidfire shot multipliers for each attacker type
+    atk_info = {}
     for k_atk, atk in attacker_side.items():
         if atk["count"] == 0 or atk["atk"] <= 0:
             continue
-        per_shot = atk["atk"]
-
-        # Compute rapidfire multiplier for this attacker type
         rf_bonus = 0.0
         for k_def, frac in fractions.items():
             rf = RAPIDFIRE.get((k_atk, k_def), 0)
             if rf > 0 and frac > 0:
                 rf_bonus += frac * rf / (rf + 1)
-        shot_multiplier = 1.0 / (1.0 - rf_bonus) if rf_bonus < 0.95 else 20.0  # cap at 20x
+        shot_multiplier = 1.0 / (1.0 - rf_bonus) if rf_bonus < 0.95 else 20.0
+        atk_info[k_atk] = (atk["atk"], atk["count"] * shot_multiplier)
 
-        effective_shots = atk["count"] * shot_multiplier
+    # For each defender type: aggregate ALL incoming damage, then resolve
+    for k_def, d in defender_side.items():
+        if d["count"] == 0 or fractions[k_def] == 0:
+            continue
 
-        for k_def, d in defender_side.items():
-            if d["count"] == 0 or fractions[k_def] == 0:
+        total_dmg = 0.0
+
+        for k_atk, (per_shot, effective_shots) in atk_info.items():
+            # OGame shield bounce: shot < 1% of max shield -> wasted
+            if per_shot < d["base_shield"] * 0.01:
                 continue
+
             shots_at_type = effective_shots * fractions[k_def]
             if shots_at_type < 0.5:
                 continue
 
-            # OGame shield bounce rule: if individual shot power < 1% of
-            # target's max shield, the shot is completely wasted.
-            # Otherwise: shield absorbs first, overflow goes to hull.
-            # Many weak shots CAN collectively deplete shields and reach hull.
-            if per_shot < d["base_shield"] * 0.01:
-                continue
+            total_dmg += per_shot * shots_at_type
 
-            # Unified damage path: shield absorb -> hull overflow
-            total_dmg = per_shot * shots_at_type
-            sigma = math.sqrt(max(total_dmg * (1 - fractions[k_def]), 1))
-            actual_dmg = max(0.0, total_dmg + rng.gauss(0, sigma))
+        if total_dmg <= 0:
+            continue
 
-            absorbed = min(actual_dmg, d["shields"])
-            d["shields"] -= absorbed
-            hull_dmg = actual_dmg - absorbed
+        # Gaussian noise on aggregate damage
+        sigma = math.sqrt(max(total_dmg * (1 - fractions[k_def]), 1))
+        actual_dmg = max(0.0, total_dmg + rng.gauss(0, sigma))
 
-            if hull_dmg > 0:
-                d["hull"] -= hull_dmg
-                if d["hull"] <= 0:
-                    d["count"] = 0
-                    d["hull"] = 0
-                else:
-                    max_hull = d["unit_hull"] * d["count"]
-                    if max_hull > 0:
-                        hull_ratio = max(0.0, d["hull"] / max_hull)
-                        # OGame 70% explosion rule: ships below 70% hull
-                        # with shields down have P(explode) = 1 - hull_ratio.
-                        # Since hull_dmg > 0, shields are depleted for this
-                        # type, so the explosion check applies.
-                        if hull_ratio < 0.7:
-                            # Fraction of ships in explosion zone scales
-                            # linearly from 0 at 70% to 1 at 0%
-                            explosion_severity = (0.7 - hull_ratio) / 0.7
-                            # Each at-risk ship has P(explode) = 1 - hull_ratio
-                            p_explode = explosion_severity * (1.0 - hull_ratio)
-                            survival = hull_ratio * (1.0 - p_explode)
-                        else:
-                            survival = hull_ratio
-                        new_count = int(d["count"] * survival)
-                        d["count"] = new_count
-                        d["hull"] = d["unit_hull"] * new_count
+        # Shield absorbs first, overflow to hull (resolved ONCE, not per attacker)
+        absorbed = min(actual_dmg, d["shields"])
+        d["shields"] -= absorbed
+        hull_dmg = actual_dmg - absorbed
+
+        if hull_dmg > 0:
+            d["hull"] -= hull_dmg
+            if d["hull"] <= 0:
+                d["count"] = 0
+                d["hull"] = 0
+            else:
+                max_hull = d["unit_hull"] * d["count"]
+                if max_hull > 0:
+                    hull_ratio = max(0.0, d["hull"] / max_hull)
+                    # OGame 70% explosion rule: ships below 70% hull
+                    # with shields down have P(explode) = 1 - hull_ratio.
+                    if hull_ratio < 0.7:
+                        explosion_severity = (0.7 - hull_ratio) / 0.7
+                        p_explode = explosion_severity * (1.0 - hull_ratio)
+                        survival = hull_ratio * (1.0 - p_explode)
+                    else:
+                        survival = hull_ratio
+                    new_count = int(d["count"] * survival)
+                    d["count"] = new_count
+                    d["hull"] = d["unit_hull"] * new_count
 
 
 def _regen_shields(side: dict):
