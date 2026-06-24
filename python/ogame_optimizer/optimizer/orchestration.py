@@ -416,6 +416,9 @@ def optimize(
             config=GAConfig(time_budget_seconds=explore_time, sims_per_eval=10, population_size=20, mutation_rate=0.20),
             base_seed=base_seed + abs(hash(seed_name)) % 9999,
             drift_bounds=seed_drift,
+            loss_scale=_loss_scale,
+            resource_weights=resource_weights,
+            preference_beta=preference_beta,
         )
 
         # Quick validate
@@ -464,6 +467,9 @@ def optimize(
             config=GAConfig(time_budget_seconds=t_alloc, sims_per_eval=sims_eval, population_size=30, mutation_rate=mut_rate),
             base_seed=base_seed + abs(hash(rname)) % 9999,
             drift_bounds=best_drift,
+            loss_scale=_loss_scale,
+            resource_weights=resource_weights,
+            preference_beta=preference_beta,
         )
 
         validation = simulate_batch(

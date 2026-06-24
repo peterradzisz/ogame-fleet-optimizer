@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Optional
 
 from ogame_optimizer.core.combat import evaluate_population
+from ogame_optimizer.core.fleet import resource_preference_penalty
 from ogame_optimizer.core.fleet import SHIPS_COST, fleet_value
 from ogame_optimizer.optimizer.statistics import CRNManager
 from ogame_optimizer.optimizer.objective import ObjectiveMode
@@ -141,6 +142,9 @@ def _evaluate_population_with_crn(
     mode: ObjectiveMode,
     n_sims: int,
     base_seed: int,
+    loss_scale: float = 1.0,
+    resource_weights: tuple = (1.0, 1.0, 1.0),
+    preference_beta: float = 0.0,
 ) -> List[float]:
     """Evaluate all fleets in population using CRN (same base_seed for all)."""
     results = evaluate_population(
@@ -153,7 +157,7 @@ def _evaluate_population_with_crn(
         base_seed=base_seed,
     )
     fitnesses = []
-    for r in results:
+    for i, r in enumerate(results):
         mean_loss = r.get("mean_attacker_loss", 0)
         win_prob = r.get("win_probability", 0)
         if mode == ObjectiveMode.ATTACK:
@@ -161,14 +165,16 @@ def _evaluate_population_with_crn(
                 fitnesses.append(float("-inf"))
             else:
                 # Negative loss (lower is better, so higher fitness is less negative)
-                fitnesses.append(-mean_loss / max(budget, 1))
+                penalty = resource_preference_penalty(population_fleets[i], resource_weights, preference_beta) if preference_beta > 0 else 0.0
+                fitnesses.append(-(mean_loss * loss_scale + penalty) / max(budget, 1))
         else:  # DEFEND
             survive_prob = 1.0 - win_prob
             if survive_prob < 0.95:
                 fitnesses.append(float("-inf"))
             else:
                 # Lower mean attacker loss = better defense
-                fitnesses.append(-mean_loss / max(budget, 1))
+                penalty = resource_preference_penalty(population_fleets[i], resource_weights, preference_beta) if preference_beta > 0 else 0.0
+                fitnesses.append(-(mean_loss * loss_scale + penalty) / max(budget, 1))
     return fitnesses
 
 
@@ -183,6 +189,9 @@ def genetic_optimize(
     config: GAConfig = None,
     base_seed: int = 42,
     drift_bounds: Dict[str, Tuple[int, int]] = None,
+    loss_scale: float = 1.0,
+    resource_weights: tuple = (1.0, 1.0, 1.0),
+    preference_beta: float = 0.0,
 ) -> GAResult:
     """Run the GA pipeline."""
     if config is None:
@@ -218,6 +227,9 @@ def genetic_optimize(
         fitnesses = _evaluate_population_with_crn(
             fleets, enemy_fleet, enemy_defenses, enemy_tech, attacker_tech,
             budget, mode_enum, config.sims_per_eval, gen_seed,
+            loss_scale=loss_scale,
+            resource_weights=resource_weights,
+            preference_beta=preference_beta,
         )
         total_evals += len(fitnesses)
         last_fitnesses = fitnesses
