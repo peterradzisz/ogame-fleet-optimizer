@@ -3,25 +3,35 @@
   let lastResult = null;
   let refineCount = 0;
 
-  const SHIP_KEYS = ["light_fighter","heavy_fighter","cruiser","battleship","battlecruiser","bomber","destroyer","deathstar","small_cargo","large_cargo","espionage_probe","pathfinder","recycler"];
+  const SHIP_KEYS = ["light_fighter","heavy_fighter","cruiser","battleship","battlecruiser","bomber","destroyer","deathstar","small_cargo","large_cargo","espionage_probe","pathfinder","recycler","reaper"];
   const DEFENSE_KEYS = ["rocket_launcher","light_laser","heavy_laser","gauss_cannon","ion_cannon","plasma_turret","small_shield_dome","large_shield_dome"];
 
   // Ship metadata: speed (base), fuel (deut/hour), shield (base)
   const SHIP_META = {
-    "light_fighter":   {speed: 12500,  fuel: 20,   shield: 10},
-    "heavy_fighter":   {speed: 10000,  fuel: 75,   shield: 25},
-    "cruiser":         {speed: 15000,  fuel: 300,  shield: 50},
-    "battleship":      {speed: 10000,  fuel: 500,  shield: 200},
-    "battlecruiser":   {speed: 10000,  fuel: 250,  shield: 400},
-    "bomber":          {speed: 4000,   fuel: 1000, shield: 500},
-    "destroyer":       {speed: 5000,   fuel: 1000, shield: 500},
-    "deathstar":       {speed: 100,    fuel: 1,    shield: 50000},
-    "small_cargo":     {speed: 5000,   fuel: 10,   shield: 10},
-    "large_cargo":     {speed: 7500,   fuel: 50,   shield: 25},
-    "espionage_probe": {speed: 100000000, fuel: 1, shield: 0},
-    "pathfinder":      {speed: 10000,  fuel: 50,   shield: 100},
-    "recycler":        {speed: 2000,   fuel: 300,  shield: 10},
+    "light_fighter":   {speed: 12500,  fuel: 20,   shield: 10,    cost: 4000},
+    "heavy_fighter":   {speed: 10000,  fuel: 75,   shield: 25,    cost: 10000},
+    "cruiser":         {speed: 15000,  fuel: 300,  shield: 50,    cost: 29000},
+    "battleship":      {speed: 10000,  fuel: 500,  shield: 200,   cost: 60000},
+    "battlecruiser":   {speed: 10000,  fuel: 250,  shield: 400,   cost: 85000},
+    "bomber":          {speed: 4000,   fuel: 1000, shield: 500,   cost: 90000},
+    "destroyer":       {speed: 5000,   fuel: 1000, shield: 500,   cost: 125000},
+    "deathstar":       {speed: 100,    fuel: 1,    shield: 50000, cost: 10000000},
+    "small_cargo":     {speed: 5000,   fuel: 10,   shield: 10,    cost: 4000},
+    "large_cargo":     {speed: 7500,   fuel: 50,   shield: 25,    cost: 12000},
+    "espionage_probe": {speed: 100000000, fuel: 1, shield: 0,     cost: 1000},
+    "pathfinder":      {speed: 10000,  fuel: 50,   shield: 100,   cost: 22000},
+    "recycler":        {speed: 2000,   fuel: 300,  shield: 10,    cost: 18000},
+    "reaper":          {speed: 7000,   fuel: 100,  shield: 1000,  cost: 140000},
   };
+  const DEFENSE_COST = {
+    "rocket_launcher": 2000, "light_laser": 2000, "heavy_laser": 8000,
+    "gauss_cannon": 37000, "ion_cannon": 8000, "plasma_turret": 130000,
+    "small_shield_dome": 20000, "large_shield_dome": 100000,
+  };
+  function shipCost(key) {
+    var m = SHIP_META[key];
+    return m ? m.cost : (DEFENSE_COST[key] || 0);
+  }
   function isSlowOrExpensive(key) {
     var m = SHIP_META[key];
     if (!m) return false;
@@ -218,6 +228,17 @@
       });
     }
 
+    // Pre-compute fleet cost for percentage calculation
+    var totalFleetCost = 0;
+    var costPctMap = {};
+    for (var pc = 0; pc < fleetRows.length; pc++) {
+      var pcFr = fleetRows[pc];
+      var pcCost = shipCost(pcFr.key);
+      if (pcCost > 0) {
+        costPctMap[pcFr.key] = pcCost * pcFr.count;
+        totalFleetCost += pcCost * pcFr.count;
+      }
+    }
     for (var j = 0; j < fleetRows.length; j++) {
       var fr = fleetRows[j];
       var rowClass = "";
@@ -250,10 +271,16 @@
         if (sv != null && sv >= 95 && fr.count > 1) shipLabel += ' <span style="color:#4ade80" title="High survival rate">&#x26E8;</span>';
       }
       var survivalCell = "<td class=\"value-col\">" + (fr.survival_pct != null ? fmtNum(fr.count * fr.survival_pct / 100) + " <span style=\"color:#8b95a7;font-size:0.9em\">(" + fr.survival_pct.toFixed(1) + "%)</span>" : "-") + "</td>";
-      row.innerHTML = "<td>" + shipLabel + "</td><td>" + fmtNum(fr.count) + "</td>" + impactCell + survivalCell;
+      var costPct = "";
+      if (totalFleetCost > 0 && costPctMap[fr.key]) {
+        costPct = "<td class=\"value-col\">" + (costPctMap[fr.key] / totalFleetCost * 100).toFixed(1) + "%</td>";
+      } else {
+        costPct = "<td class=\"value-col\">-</td>";
+      }
+      row.innerHTML = "<td>" + shipLabel + "</td><td>" + fmtNum(fr.count) + "</td>" + costPct + impactCell + survivalCell;
       tbody.appendChild(row);
     }
-    if (fleetRows.length === 0) tbody.innerHTML = "<tr><td colspan=4>(empty fleet)</td></tr>";
+    if (fleetRows.length === 0) tbody.innerHTML = "<tr><td colspan=5>(empty fleet)</td></tr>";
 
     // ---- Defender fleet table (right column) ----
     var defTbody = document.querySelector("#defender-fleet-table tbody");
@@ -263,7 +290,7 @@
       var defAnalysis = data.defender_fleet_analysis || {};
       var defKeys = Object.keys(defAnalysis);
       if (defKeys.length === 0) {
-        defTbody.innerHTML = "<tr><td colspan=3 style=\"color:#6c7891\">(no enemy ships)</td></tr>";
+        defTbody.innerHTML = "<tr><td colspan=4 style=\"color:#6c7891\">(no enemy ships)</td></tr>";
         if (defSummary) defSummary.textContent = "";
       } else {
         // Sort by initial count desc so biggest threats come first
@@ -274,6 +301,14 @@
           return a < b ? -1 : (a > b ? 1 : 0);
         });
         var totalCount = 0, totalSurv = 0;
+        var totalDefCost = 0;
+        var defCostMap = {};
+        for (var d = 0; d < defKeys.length; d++) {
+          var dk0 = defKeys[d];
+          var dc = shipCost(dk0) * ((defAnalysis[dk0] || {}).count || 0);
+          totalDefCost += dc;
+          defCostMap[dk0] = dc;
+        }
         for (var d = 0; d < defKeys.length; d++) {
           var dk = defKeys[d];
           var info = defAnalysis[dk];
@@ -287,8 +322,10 @@
           var survCell = survPct != null
             ? fmtNum(survCnt) + " <span style=\"color:#8b95a7;font-size:0.9em\">(" + survPct.toFixed(1) + "%)</span>"
             : "-";
+          var defCostPct = (totalDefCost > 0 && defCostMap[dk]) ? "<td class=\"value-col\">" + (defCostMap[dk] / totalDefCost * 100).toFixed(1) + "%</td>" : "<td class=\"value-col\">-</td>";
           defRow.innerHTML = "<td" + destroyedClass + ">" + dk.replace(/_/g, " ") + "</td>"
                             + "<td" + destroyedClass + ">" + fmtNum(cnt) + "</td>"
+                            + defCostPct
                             + "<td class=\"value-col\">" + survCell + "</td>";
           defTbody.appendChild(defRow);
         }
