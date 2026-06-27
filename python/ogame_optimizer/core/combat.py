@@ -43,8 +43,10 @@ _SHIP_SNAKE_TO_PASCAL: dict[str, str] = {
     "deathstar":       "Deathstar",
     "espionage_probe": "EspionageProbe",
     "pathfinder": "Pathfinder",
-    "recycler": "Recycler",
     "reaper": "Reaper",
+    "solar_satellite": "SolarSatellite",
+    "crawler": "Crawler",
+    "recycler": "Recycler",
 }
 
 _SHIP_PASCAL_TO_SNAKE: dict[str, str] = {v: k for k, v in _SHIP_SNAKE_TO_PASCAL.items()}
@@ -120,11 +122,13 @@ from ogame_optimizer.core.fast_combat import (
 )
 
 
-_RUST_UNKNOWN_SHIPS = {"pathfinder", "recycler", "Pathfinder", "Recycler"}
+# Pathfinder, Solar Satellite, Crawler now in Rust ShipType enum
+# Only Recycler remains Python-only (civil ship, not commonly used in combat)
+_RUST_UNKNOWN_SHIPS = {"recycler", "Recycler"}
 
 
 def _strip_unknown_for_rust(fleet):
-    """Remove only pathfinder/recycler (known to Python but not Rust core).
+    """Remove only recycler (the one remaining Python-only ship).
     Truly unknown ships pass through so Rust raises a clear ValueError."""
     return {k: v for k, v in (fleet or {}).items() if k not in _RUST_UNKNOWN_SHIPS}
 

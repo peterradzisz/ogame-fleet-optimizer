@@ -27,7 +27,7 @@ def test_list_ships(client):
     r = client.get("/api/ships")
     assert r.status_code == 200
     ships = r.json()["ships"]
-    assert len(ships) == 14  # 13 original + Reaper (post-v0.84)
+    assert len(ships) == 16  # 14 original + Solar Satellite + Crawler (civil ships)
     keys = {s["key"] for s in ships}
     assert "light_fighter" in keys
     assert "deathstar" in keys

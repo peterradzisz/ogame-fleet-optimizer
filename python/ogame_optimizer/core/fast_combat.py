@@ -25,9 +25,11 @@ SHIP_STATS: Dict[str, dict] = {
     "small_cargo":      {"atk": 5,      "shield": 10,    "hull": 400},
     "large_cargo":      {"atk": 5,      "shield": 25,    "hull": 1200},
     "espionage_probe":  {"atk": 1,      "shield": 0,     "hull": 100},
-    "pathfinder":       {"atk": 300,    "shield": 100,   "hull": 2000},   # structure 20,000/10
+    "pathfinder":       {"atk": 200,    "shield": 100,   "hull": 2300},   # structure 23,000/10 (FIXED per Fandom)
     "recycler":         {"atk": 1,      "shield": 10,    "hull": 1600},   # structure 16,000/10
-    "reaper":           {"atk": 280,    "shield": 1000,  "hull": 14000},  # structure 140,000/10
+    "reaper":           {"atk": 2800,   "shield": 700,   "hull": 14000},  # structure 140,000/10 (FIXED per Fandom; user-verified W14/A16/S13 scaling)
+    "solar_satellite":  {"atk": 1,      "shield": 1,     "hull": 200},    # structure 2,000/10
+    "crawler":          {"atk": 1,      "shield": 1,     "hull": 400},    # structure 4,000/10
 }
 
 DEFENSE_STATS: Dict[str, dict] = {
@@ -45,52 +47,95 @@ DEFENSE_STATS: Dict[str, dict] = {
 # Each entry means shooter has rapidfire N against target.
 # Expected shots multiplier when ALL targets are that type = N+1.
 # Damage is distributed proportionally across target types.
+# Rapidfire table: (shooter, target) -> rf_value
+# Verified against OGame Fandom wiki for modern OGame (post-v0.84).
+# Key fixes from prior version:
+#   - Reaper: was anti-fighter (LF=3, HF=2), actually anti-capital (BS=7, Bo=4, De=3)
+#   - Deathstar vs Battlecruiser: was 250, actually 15 per Fandom
+#   - Pathfinder was missing entirely from shooter side
+#   - Solar Satellite and Crawler were not modeled (needed for accurate RF chains)
 RAPIDFIRE: Dict[tuple, int] = {
+    # Light Fighter: vs EP=5, SS=5, Crawler=5
     ("light_fighter", "espionage_probe"): 5,
-    ("light_fighter", "small_cargo"): 5,
+    ("light_fighter", "solar_satellite"): 5,
+    ("light_fighter", "crawler"): 5,
+    # Heavy Fighter: vs SC=3, EP=5, SS=5, Crawler=5
     ("heavy_fighter", "small_cargo"): 3,
     ("heavy_fighter", "espionage_probe"): 5,
+    ("heavy_fighter", "solar_satellite"): 5,
+    ("heavy_fighter", "crawler"): 5,
+    # Cruiser: vs LF=6, EP=5, SS=5, Crawler=5, RL=10
     ("cruiser", "light_fighter"): 6,
     ("cruiser", "espionage_probe"): 5,
+    ("cruiser", "solar_satellite"): 5,
+    ("cruiser", "crawler"): 5,
     ("cruiser", "rocket_launcher"): 10,
+    # Battleship: vs EP=5, SS=5, Crawler=5, PF=5
     ("battleship", "espionage_probe"): 5,
+    ("battleship", "solar_satellite"): 5,
+    ("battleship", "crawler"): 5,
+    ("battleship", "pathfinder"): 5,
+    # Battlecruiser: vs EP=5, SS=5, Crawler=5, SC=3, LC=3, HF=4, CR=4, BS=7
+    ("battlecruiser", "espionage_probe"): 5,
+    ("battlecruiser", "solar_satellite"): 5,
+    ("battlecruiser", "crawler"): 5,
     ("battlecruiser", "small_cargo"): 3,
     ("battlecruiser", "large_cargo"): 3,
     ("battlecruiser", "heavy_fighter"): 4,
     ("battlecruiser", "cruiser"): 4,
     ("battlecruiser", "battleship"): 7,
-    ("battlecruiser", "espionage_probe"): 5,
+    # Bomber: vs EP=5, SS=5, Crawler=5, defenses (RL=20, LL=20, HL=10, IC=10, GC=5, PT=5)
     ("bomber", "espionage_probe"): 5,
+    ("bomber", "solar_satellite"): 5,
+    ("bomber", "crawler"): 5,
     ("bomber", "rocket_launcher"): 20,
     ("bomber", "light_laser"): 20,
     ("bomber", "heavy_laser"): 10,
     ("bomber", "ion_cannon"): 10,
     ("bomber", "gauss_cannon"): 5,
     ("bomber", "plasma_turret"): 5,
+    # Destroyer: vs EP=5, SS=5, Crawler=5, BC=2, LL=10
     ("destroyer", "espionage_probe"): 5,
+    ("destroyer", "solar_satellite"): 5,
+    ("destroyer", "crawler"): 5,
     ("destroyer", "battlecruiser"): 2,
     ("destroyer", "light_laser"): 10,
-    ("deathstar", "small_cargo"): 250,
-    ("deathstar", "large_cargo"): 250,
+    # Reaper (post-v0.84, modern OGame) - FIXED: was anti-fighter, actually anti-capital
+    ("reaper", "espionage_probe"): 5,
+    ("reaper", "solar_satellite"): 5,
+    ("reaper", "crawler"): 5,
+    ("reaper", "battleship"): 7,
+    ("reaper", "bomber"): 4,
+    ("reaper", "destroyer"): 3,
+    # Pathfinder (post-v0.84, modern OGame) - NEW
+    ("pathfinder", "espionage_probe"): 5,
+    ("pathfinder", "solar_satellite"): 5,
+    ("pathfinder", "crawler"): 5,
+    ("pathfinder", "light_fighter"): 3,
+    ("pathfinder", "heavy_fighter"): 2,
+    ("pathfinder", "cruiser"): 3,
+    # Deathstar: vs EP=1250, SS=1250, Crawler=1250, LF=200, HF=100,
+    # CR=33, BS=30, BC=15 (FIXED: was 250), Bo=25, De=5, SC=250, LC=250,
+    # Pathfinder=30, Reaper=30, defenses as listed
+    ("deathstar", "espionage_probe"): 1250,
+    ("deathstar", "solar_satellite"): 1250,
+    ("deathstar", "crawler"): 1250,
     ("deathstar", "light_fighter"): 200,
     ("deathstar", "heavy_fighter"): 100,
     ("deathstar", "cruiser"): 33,
     ("deathstar", "battleship"): 30,
-    ("deathstar", "battlecruiser"): 250,
+    ("deathstar", "battlecruiser"): 15,  # FIXED: was 250
+    ("deathstar", "pathfinder"): 30,
+    ("deathstar", "reaper"): 30,
     ("deathstar", "bomber"): 25,
     ("deathstar", "destroyer"): 5,
-    ("deathstar", "espionage_probe"): 1250,
+    ("deathstar", "small_cargo"): 250,
+    ("deathstar", "large_cargo"): 250,
     ("deathstar", "rocket_launcher"): 200,
     ("deathstar", "light_laser"): 200,
     ("deathstar", "heavy_laser"): 100,
-    ("deathstar", "gauss_cannon"): 50,
     ("deathstar", "ion_cannon"): 100,
-    # Reaper rapidfire (post-v0.84, modern OGame):
-    ("reaper", "small_cargo"): 5,
-    ("reaper", "large_cargo"): 5,
-    ("reaper", "espionage_probe"): 5,
-    ("reaper", "light_fighter"): 3,
-    ("reaper", "heavy_fighter"): 2,
+    ("deathstar", "gauss_cannon"): 50,
 }
 
 
@@ -109,9 +154,11 @@ SHIP_COSTS_MCD = {
     "small_cargo": (2000, 2000, 0),
     "large_cargo": (6000, 6000, 0),
     "espionage_probe": (0, 1000, 0),
-    "pathfinder": (10000, 10000, 2000),
+    "pathfinder": (8000, 15000, 8000),  # FIXED per Fandom
     "recycler": (10000, 6000, 2000),
-    "reaper": (85000, 55000, 0),
+    "reaper": (85000, 55000, 20000),  # FIXED per Fandom: added 20K deuterium
+    "solar_satellite": (0, 2000, 500),
+    "crawler": (2000, 2000, 1000),
 }
 
 DEFENSE_COSTS_MCD = {

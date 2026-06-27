@@ -37,10 +37,10 @@ SHIPS_COST: Dict[str, tuple] = {
     "bomber":           (50_000,       25_000,     15_000),
     "destroyer":        (60_000,       50_000,     15_000),
     "deathstar":        (5_000_000,    4_000_000,  1_000_000),
-    "pathfinder": (10000, 10000, 2000),
+    "pathfinder": (8000, 15000, 8000),  # FIXED per Fandom,
     "recycler": (10000, 6000, 2000),
     "espionage_probe":  (0,            1_000,      0),
-    "reaper":           (85_000,        55_000,     0),
+    "reaper":           (85_000,        55_000,     20_000),  # FIXED per Fandom
 }
 
 # Order matches ``DefenseType::ALL`` in ships.rs.
@@ -327,9 +327,10 @@ SHIP_BASE_ATK: Dict[str, int] = {
     "light_fighter": 50, "heavy_fighter": 150,
     "cruiser": 400, "battleship": 1000, "battlecruiser": 700,
     "bomber": 1000, "destroyer": 2000, "deathstar": 200000,
-    "pathfinder": (10000, 10000, 2000),
-    "recycler": (10000, 6000, 2000),
-    "pathfinder": 300,
+    "espionage_probe": 0,  # Probe can't attack
+    "pathfinder": 200,     # FIXED per Fandom (was 300, also had duplicate-key bug)
+    "reaper": 2800,        # FIXED per Fandom (was missing — anti-capital ship)
     "recycler": 1,
-    "espionage_probe": 0,
+    "solar_satellite": 1,  # Can't meaningfully attack
+    "crawler": 1,          # Can't meaningfully attack
 }

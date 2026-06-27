@@ -26,6 +26,9 @@ fn parse_ship(name: &str) -> PyResult<ShipType> {
         "LargeCargo" => Ok(ShipType::LargeCargo),
         "EspionageProbe" => Ok(ShipType::EspionageProbe),
         "Reaper" => Ok(ShipType::Reaper),
+        "Pathfinder" => Ok(ShipType::Pathfinder),
+        "SolarSatellite" => Ok(ShipType::SolarSatellite),
+        "Crawler" => Ok(ShipType::Crawler),
         other => Err(pyo3::exceptions::PyValueError::new_err(
             format!("Unknown ship type: {}", other)
         )),
@@ -108,6 +111,9 @@ fn ship_to_str(s: ShipType) -> &'static str {
         ShipType::LargeCargo => "LargeCargo",
         ShipType::EspionageProbe => "EspionageProbe",
         ShipType::Reaper => "Reaper",
+        ShipType::Pathfinder => "Pathfinder",
+        ShipType::SolarSatellite => "SolarSatellite",
+        ShipType::Crawler => "Crawler",
     }
 }
 

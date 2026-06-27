@@ -1,7 +1,8 @@
 //! OGame ship and defense data module.
 //!
-//! This module contains the verified base stats for the 11 combat/civil ships
-//! and 8 defense structures required for OGame combat simulation.
+//! This module contains the verified base stats for 15 ship types
+//! (12 classic + Reaper + Pathfinder + Solar Satellite + Crawler)
+//! and 8 defense structures required for modern OGame combat simulation.
 //!
 //! # Sources
 //!
@@ -56,6 +57,9 @@ pub enum ShipType {
     Deathstar,
     EspionageProbe,
     Reaper,
+    Pathfinder,
+    SolarSatellite,
+    Crawler,
 }
 
 impl ShipType {
@@ -75,6 +79,9 @@ impl ShipType {
             ShipType::Deathstar => "Deathstar",
             ShipType::EspionageProbe => "EspionageProbe",
             ShipType::Reaper => "Reaper",
+            ShipType::Pathfinder => "Pathfinder",
+            ShipType::SolarSatellite => "SolarSatellite",
+            ShipType::Crawler => "Crawler",
         }
     }
 
@@ -92,6 +99,9 @@ impl ShipType {
         ShipType::Deathstar,
         ShipType::EspionageProbe,
         ShipType::Reaper,
+        ShipType::Pathfinder,
+        ShipType::SolarSatellite,
+        ShipType::Crawler,
     ];
 }
 
@@ -292,21 +302,79 @@ pub fn ship_stats(ship: ShipType) -> ShipStats {
             fuel: 1,
         },
         // ---- Reaper (post-v0.84, modern OGame) ----
-        // Community wiki values (Sidian + Fandom):
-        // 85,000 M / 55,000 C / 0 D, atk 280, shield 1,000, armor 14,000
-        // (= structure 90,000 / 10), speed 7,000, cargo 0, fuel 100.
-        // Shield-piercing mechanic is NOT modeled here — treated as a
-        // standard attack so combat simulation stays auditable.
+        // Verified against Fandom wiki (https://ogame.fandom.com/wiki/Reaper):
+        //   Cost: 85,000 M / 55,000 C / 20,000 D
+        //   Structural Integrity: 140,000 (→ armor 14,000 at zero tech)
+        //   Shield Power: 700
+        //   Weapon Power: 2,800
+        //   Speed: 7,000 (Hyperspace Drive level 7)
+        //   Cargo: 10,000, Fuel: 1,100
+        // User-verified tech scaling matches Fandom base values:
+        //   W14: 2,800 × 2.4 = 6,720 ✓
+        //   A16: 140,000 × 2.6 = 364,000 ✓
+        //   S13: 700 × 2.3 = 1,610 ✓
         ShipType::Reaper => ShipStats {
             cost_metal: 85_000,
             cost_crystal: 55_000,
-            cost_deuterium: 0,
-            base_attack: 280,
-            base_shield: 1_000,
-            base_armor: 14_000, // structure 140,000 / 10 (85,000+55,000)
+            cost_deuterium: 20_000,
+            base_attack: 2_800,
+            base_shield: 700,
+            base_armor: 14_000, // structure 140,000 / 10
             speed: 7_000,
+            cargo: 10_000,
+            fuel: 1_100,
+        },
+
+        // ---- Pathfinder (post-v0.84, modern OGame) ----
+        // Verified against Fandom wiki (https://ogame.fandom.com/wiki/Pathfinder):
+        //   Cost: 8,000 M / 15,000 C / 8,000 D
+        //   Structural Integrity: 23,000 (→ armor 2,300 at zero tech)
+        //   Shield Power: 100, Weapon Power: 200, Speed: 12,000
+        //   Cargo: 10,000, Fuel: 300
+        ShipType::Pathfinder => ShipStats {
+            cost_metal: 8_000,
+            cost_crystal: 15_000,
+            cost_deuterium: 8_000,
+            base_attack: 200,
+            base_shield: 100,
+            base_armor: 2_300, // structure 23,000 / 10
+            speed: 12_000,
+            cargo: 10_000,
+            fuel: 300,
+        },
+
+        // ---- Solar Satellite (civil — generates energy) ----
+        // Verified against Fandom wiki (https://ogame.fandom.com/wiki/Solar_Satellite):
+        //   Cost: 0 M / 2,000 C / 500 D
+        //   Structural Integrity: 2,000 (→ armor 200 at zero tech)
+        //   Non-combat — RF'd 5× by all combat ships (modeled for RF accuracy).
+        ShipType::SolarSatellite => ShipStats {
+            cost_metal: 0,
+            cost_crystal: 2_000,
+            cost_deuterium: 500,
+            base_attack: 1,
+            base_shield: 1,
+            base_armor: 200, // structure 2,000 / 10
+            speed: 0,
             cargo: 0,
-            fuel: 100,
+            fuel: 0,
+        },
+
+        // ---- Crawler (civil — boosts resource production) ----
+        // Verified against Fandom wiki (https://ogame.fandom.com/wiki/Crawler):
+        //   Cost: 2,000 M / 2,000 C / 1,000 D
+        //   Structural Integrity: 4,000 (→ armor 400 at zero tech)
+        //   Non-combat — RF'd 5× by all combat ships (modeled for RF accuracy).
+        ShipType::Crawler => ShipStats {
+            cost_metal: 2_000,
+            cost_crystal: 2_000,
+            cost_deuterium: 1_000,
+            base_attack: 1,
+            base_shield: 1,
+            base_armor: 400, // structure 4,000 / 10
+            speed: 0,
+            cargo: 0,
+            fuel: 0,
         },
     }
 }
@@ -559,15 +627,62 @@ mod tests {
 
     #[test]
     fn reaper_known_stats() {
+        // Verified against Fandom wiki + user-provided "with tech" scaling.
         let s = ship_stats(ShipType::Reaper);
         assert_eq!(s.cost_metal, 85_000);
         assert_eq!(s.cost_crystal, 55_000);
-        assert_eq!(s.cost_deuterium, 0);
-        assert_eq!(s.base_attack, 280);
-        assert_eq!(s.base_shield, 1_000);
+        assert_eq!(s.cost_deuterium, 20_000); // FIXED: was incorrectly 0
+        assert_eq!(s.base_attack, 2_800);      // FIXED: was incorrectly 280
+        assert_eq!(s.base_shield, 700);         // FIXED: was incorrectly 1_000
         assert_eq!(s.base_armor, 14_000);
         assert_eq!(s.speed, 7_000);
-        assert_eq!(s.fuel, 100);
+        assert_eq!(s.cargo, 10_000);            // FIXED: was incorrectly 0
+        assert_eq!(s.fuel, 1_100);              // FIXED: was incorrectly 100
+    }
+
+    #[test]
+    fn pathfinder_known_stats() {
+        // Verified against Fandom wiki.
+        let s = ship_stats(ShipType::Pathfinder);
+        assert_eq!(s.cost_metal, 8_000);
+        assert_eq!(s.cost_crystal, 15_000);
+        assert_eq!(s.cost_deuterium, 8_000);
+        assert_eq!(s.base_attack, 200);
+        assert_eq!(s.base_shield, 100);
+        assert_eq!(s.base_armor, 2_300); // structure 23,000 / 10
+        assert_eq!(s.speed, 12_000);
+        assert_eq!(s.cargo, 10_000);
+        assert_eq!(s.fuel, 300);
+    }
+
+    #[test]
+    fn solar_satellite_known_stats() {
+        // Non-combat civil ship (energy generator).
+        let s = ship_stats(ShipType::SolarSatellite);
+        assert_eq!(s.cost_metal, 0);
+        assert_eq!(s.cost_crystal, 2_000);
+        assert_eq!(s.cost_deuterium, 500);
+        assert_eq!(s.base_attack, 1);
+        assert_eq!(s.base_shield, 1);
+        assert_eq!(s.base_armor, 200); // structure 2,000 / 10
+        assert_eq!(s.speed, 0);
+        assert_eq!(s.cargo, 0);
+        assert_eq!(s.fuel, 0);
+    }
+
+    #[test]
+    fn crawler_known_stats() {
+        // Non-combat civil ship (production booster).
+        let s = ship_stats(ShipType::Crawler);
+        assert_eq!(s.cost_metal, 2_000);
+        assert_eq!(s.cost_crystal, 2_000);
+        assert_eq!(s.cost_deuterium, 1_000);
+        assert_eq!(s.base_attack, 1);
+        assert_eq!(s.base_shield, 1);
+        assert_eq!(s.base_armor, 400); // structure 4,000 / 10
+        assert_eq!(s.speed, 0);
+        assert_eq!(s.cargo, 0);
+        assert_eq!(s.fuel, 0);
     }
 
     #[test]

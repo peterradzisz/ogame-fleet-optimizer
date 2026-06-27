@@ -75,54 +75,57 @@ pub fn rapidfire(shooter: ShipType, target: UnitType) -> Option<u32> {
     // the shooter has rapid fire against; anything not listed returns None.
     //
     // Source: https://github.com/ogamespec/ogame-opensource/blob/0b765cdb/game/unit.php
-    // (plus modern OGame updates for entries added after v0.84).
+    // Cross-referenced with https://ogame.fandom.com/wiki/* (modern OGame values
+    // for Reaper, Pathfinder, and post-v0.84 ships).
     //
     // We use a flat approach: for each shooter, list every (target, value)
     // pair. This is slightly more verbose than a nested match but makes
     // the table trivially auditable against the wiki/gamespec sources.
     let value = match (shooter, target) {
         // ---- Light Fighter ----
-        // ogamespec unit.php $RapidFire: LF → Probe=5, Sat=5
-        // Modern OGame: also LF → SmallCargo=5
+        // Fandom: vs EP=5, SS=5, Crawler=5
         (ShipType::LightFighter, UnitType::Ship(ShipType::EspionageProbe)) => 5,
-        (ShipType::LightFighter, UnitType::Ship(ShipType::SmallCargo)) => 5,
-        // LF vs any defense: no rapid fire. Falls through to the `_` arm below.
+        (ShipType::LightFighter, UnitType::Ship(ShipType::SolarSatellite)) => 5,
+        (ShipType::LightFighter, UnitType::Ship(ShipType::Crawler)) => 5,
 
         // ---- Heavy Fighter ----
-        // ogamespec unit.php $RapidFire: HF → SC=3, Probe=5, Sat=5
-        // Plan said "HF vs Cruiser = 3" — this is incorrect. ogamespec and
-        // o-tools (ghiroblu) both show HF has NO rapid fire against Cruiser.
+        // Fandom: vs SC=3, EP=5, SS=5, Crawler=5
         (ShipType::HeavyFighter, UnitType::Ship(ShipType::SmallCargo)) => 3,
         (ShipType::HeavyFighter, UnitType::Ship(ShipType::EspionageProbe)) => 5,
+        (ShipType::HeavyFighter, UnitType::Ship(ShipType::SolarSatellite)) => 5,
+        (ShipType::HeavyFighter, UnitType::Ship(ShipType::Crawler)) => 5,
 
         // ---- Cruiser ----
-        // ogamespec unit.php $RapidFire: CR → LF=6, Probe=5, Sat=5, RL=10
+        // Fandom: vs LF=6, EP=5, SS=5, Crawler=5, RL=10
         (ShipType::Cruiser, UnitType::Ship(ShipType::LightFighter)) => 6,
         (ShipType::Cruiser, UnitType::Ship(ShipType::EspionageProbe)) => 5,
+        (ShipType::Cruiser, UnitType::Ship(ShipType::SolarSatellite)) => 5,
+        (ShipType::Cruiser, UnitType::Ship(ShipType::Crawler)) => 5,
         (ShipType::Cruiser, UnitType::Defense(DefenseType::RocketLauncher)) => 10,
 
         // ---- Battleship ----
-        // ogamespec unit.php $RapidFire: BS → Probe=5, Sat=5
-        // Plan said "BS vs Battlecruiser = 4" — this is incorrect. ogamespec,
-        // o-tools, and Sidian all show Battleship has NO rapid fire against
-        // Battlecruiser.
+        // Fandom: vs EP=5, SS=5, Crawler=5, PF=5
         (ShipType::Battleship, UnitType::Ship(ShipType::EspionageProbe)) => 5,
+        (ShipType::Battleship, UnitType::Ship(ShipType::SolarSatellite)) => 5,
+        (ShipType::Battleship, UnitType::Ship(ShipType::Crawler)) => 5,
+        (ShipType::Battleship, UnitType::Ship(ShipType::Pathfinder)) => 5,
 
         // ---- Battlecruiser ----
-        // ogamespec unit.php $RapidFire: BC → SC=3, LC=3, HF=4, CR=4, BS=7, Probe=5, Sat=5
-        // Plan said "BC vs Cruiser = 3" — this is incorrect. ogamespec and
-        // o-tools both show BC vs CR = 4.
+        // Fandom: vs EP=5, SS=5, Crawler=5, SC=3, LC=3, HF=4, CR=4, BS=7
+        (ShipType::Battlecruiser, UnitType::Ship(ShipType::EspionageProbe)) => 5,
+        (ShipType::Battlecruiser, UnitType::Ship(ShipType::SolarSatellite)) => 5,
+        (ShipType::Battlecruiser, UnitType::Ship(ShipType::Crawler)) => 5,
         (ShipType::Battlecruiser, UnitType::Ship(ShipType::SmallCargo)) => 3,
         (ShipType::Battlecruiser, UnitType::Ship(ShipType::LargeCargo)) => 3,
         (ShipType::Battlecruiser, UnitType::Ship(ShipType::HeavyFighter)) => 4,
         (ShipType::Battlecruiser, UnitType::Ship(ShipType::Cruiser)) => 4,
         (ShipType::Battlecruiser, UnitType::Ship(ShipType::Battleship)) => 7,
-        (ShipType::Battlecruiser, UnitType::Ship(ShipType::EspionageProbe)) => 5,
 
         // ---- Bomber ----
-        // ogamespec unit.php $RapidFire: Bomber → Probe=5, Sat=5, RL=20, LL=20, HL=10, IC=10
-        // Modern OGame (Sidian) also adds: Bomber → GC=5, PT=5
+        // Fandom: vs EP=5, SS=5, Crawler=5, RL=20, LL=20, HL=10, IC=10, GC=5, PT=5
         (ShipType::Bomber, UnitType::Ship(ShipType::EspionageProbe)) => 5,
+        (ShipType::Bomber, UnitType::Ship(ShipType::SolarSatellite)) => 5,
+        (ShipType::Bomber, UnitType::Ship(ShipType::Crawler)) => 5,
         (ShipType::Bomber, UnitType::Defense(DefenseType::RocketLauncher)) => 20,
         (ShipType::Bomber, UnitType::Defense(DefenseType::LightLaser)) => 20,
         (ShipType::Bomber, UnitType::Defense(DefenseType::HeavyLaser)) => 10,
@@ -131,57 +134,73 @@ pub fn rapidfire(shooter: ShipType, target: UnitType) -> Option<u32> {
         (ShipType::Bomber, UnitType::Defense(DefenseType::PlasmaTurret)) => 5,
 
         // ---- Destroyer ----
-        // ogamespec unit.php $RapidFire: De → Probe=5, Sat=5, BC=2, LL=10
-        // Plan said "De vs Light Fighter = 10" — this is incorrect. ogamespec
-        // does not list this, and o-tools shows De vs LF = 0.
-        // Plan said "De vs Battlecruiser = 3" — this is incorrect. ogamespec,
-        // o-tools, and Sidian all show De vs BC = 2.
+        // Fandom: vs EP=5, SS=5, Crawler=5, BC=2, LL=10
         (ShipType::Destroyer, UnitType::Ship(ShipType::EspionageProbe)) => 5,
+        (ShipType::Destroyer, UnitType::Ship(ShipType::SolarSatellite)) => 5,
+        (ShipType::Destroyer, UnitType::Ship(ShipType::Crawler)) => 5,
         (ShipType::Destroyer, UnitType::Ship(ShipType::Battlecruiser)) => 2,
         (ShipType::Destroyer, UnitType::Defense(DefenseType::LightLaser)) => 10,
 
         // ---- Reaper (post-v0.84, modern OGame) ----
-        // Community wiki (Sidian, Fandom): Reaper has rapidfire vs
-        // SC=5, LC=5, EP=5, LF=3, HF=2. No rapidfire vs Cruiser+.
-        (ShipType::Reaper, UnitType::Ship(ShipType::SmallCargo)) => 5,
-        (ShipType::Reaper, UnitType::Ship(ShipType::LargeCargo)) => 5,
+        // Fandom: vs EP=5, SS=5, Crawler=5, BS=7, Bo=4, De=3
+        // FIXED: previous code had Reaper as anti-fighter (LF=3, HF=2)
+        // which was a Pathfinder data copy-paste. Reaper is actually
+        // anti-capital (kills Battleships, Bombers, Destroyers).
         (ShipType::Reaper, UnitType::Ship(ShipType::EspionageProbe)) => 5,
-        (ShipType::Reaper, UnitType::Ship(ShipType::LightFighter)) => 3,
-        (ShipType::Reaper, UnitType::Ship(ShipType::HeavyFighter)) => 2,
+        (ShipType::Reaper, UnitType::Ship(ShipType::SolarSatellite)) => 5,
+        (ShipType::Reaper, UnitType::Ship(ShipType::Crawler)) => 5,
+        (ShipType::Reaper, UnitType::Ship(ShipType::Battleship)) => 7,
+        (ShipType::Reaper, UnitType::Ship(ShipType::Bomber)) => 4,
+        (ShipType::Reaper, UnitType::Ship(ShipType::Destroyer)) => 3,
+
+        // ---- Pathfinder (post-v0.84, modern OGame) ----
+        // Fandom: vs EP=5, SS=5, Crawler=5, LF=3, HF=2, CR=3
+        (ShipType::Pathfinder, UnitType::Ship(ShipType::EspionageProbe)) => 5,
+        (ShipType::Pathfinder, UnitType::Ship(ShipType::SolarSatellite)) => 5,
+        (ShipType::Pathfinder, UnitType::Ship(ShipType::Crawler)) => 5,
+        (ShipType::Pathfinder, UnitType::Ship(ShipType::LightFighter)) => 3,
+        (ShipType::Pathfinder, UnitType::Ship(ShipType::HeavyFighter)) => 2,
+        (ShipType::Pathfinder, UnitType::Ship(ShipType::Cruiser)) => 3,
+
+        // ---- Solar Satellite (civil — passive, no RF) ----
+        // ---- Crawler (civil — passive, no RF) ----
+        (ShipType::SolarSatellite, _) => return None,
+        (ShipType::Crawler, _) => return None,
 
         // ---- Deathstar ----
-        // ogamespec v0.84 unit.php $RapidFire:
-        //   RIP → SC=250, LC=250, LF=200, HF=100, CR=33, BS=30, Colon=250,
-        //         Rec=250, Probe=1250, Bo=25, Sat=1250, De=5, BC=15,
-        //         RL=200, LL=200, HL=100, GC=50, IC=100
-        // Modern OGame (Sidian + o-tools): RIP → BC changed from 15 → 250.
-        // We use the modern value (250) because the project targets modern
-        // OGame; documented here for transparency.
-        (ShipType::Deathstar, UnitType::Ship(ShipType::SmallCargo)) => 250,
-        (ShipType::Deathstar, UnitType::Ship(ShipType::LargeCargo)) => 250,
+        // Fandom: vs EP=1250, SS=1250, Crawler=1250, LF=200, HF=100,
+        //                  CR=33, BS=30, BC=15 (FIXED: was 250),
+        //                  Bo=25, De=5, SC=250, LC=250, PF=30, Reaper=30
+        // Note: BC was previously coded as 250 (assumed "modern") but
+        // Fandom confirms it has remained at 15 in modern OGame. The 250
+        // value was likely a balance change that was reverted.
+        (ShipType::Deathstar, UnitType::Ship(ShipType::EspionageProbe)) => 1_250,
+        (ShipType::Deathstar, UnitType::Ship(ShipType::SolarSatellite)) => 1_250,
+        (ShipType::Deathstar, UnitType::Ship(ShipType::Crawler)) => 1_250,
         (ShipType::Deathstar, UnitType::Ship(ShipType::LightFighter)) => 200,
         (ShipType::Deathstar, UnitType::Ship(ShipType::HeavyFighter)) => 100,
         (ShipType::Deathstar, UnitType::Ship(ShipType::Cruiser)) => 33,
         (ShipType::Deathstar, UnitType::Ship(ShipType::Battleship)) => 30,
-        (ShipType::Deathstar, UnitType::Ship(ShipType::Battlecruiser)) => 250, // modern; v0.84 = 15
+        (ShipType::Deathstar, UnitType::Ship(ShipType::Battlecruiser)) => 15, // FIXED: was 250
+        (ShipType::Deathstar, UnitType::Ship(ShipType::Pathfinder)) => 30,    // NEW
+        (ShipType::Deathstar, UnitType::Ship(ShipType::Reaper)) => 30,         // NEW
         (ShipType::Deathstar, UnitType::Ship(ShipType::Bomber)) => 25,
         (ShipType::Deathstar, UnitType::Ship(ShipType::Destroyer)) => 5,
-        (ShipType::Deathstar, UnitType::Ship(ShipType::EspionageProbe)) => 1_250,
+        (ShipType::Deathstar, UnitType::Ship(ShipType::SmallCargo)) => 250,
+        (ShipType::Deathstar, UnitType::Ship(ShipType::LargeCargo)) => 250,
         (ShipType::Deathstar, UnitType::Defense(DefenseType::RocketLauncher)) => 200,
         (ShipType::Deathstar, UnitType::Defense(DefenseType::LightLaser)) => 200,
         (ShipType::Deathstar, UnitType::Defense(DefenseType::HeavyLaser)) => 100,
-        (ShipType::Deathstar, UnitType::Defense(DefenseType::GaussCannon)) => 50,
         (ShipType::Deathstar, UnitType::Defense(DefenseType::IonCannon)) => 100,
+        (ShipType::Deathstar, UnitType::Defense(DefenseType::GaussCannon)) => 50,
 
         // ---- Espionage Probe ----
-        // ogamespec unit.php $RapidFire: Probe → (empty)
         // Probe has no rapid fire against any target.
         (ShipType::EspionageProbe, _) => return None,
 
         // ---- Default: no rapid fire ----
         _ => return None,
     };
-
     Some(value)
 }
 
@@ -343,13 +362,22 @@ mod tests {
 
     #[test]
     fn light_fighter_rapidfire() {
+        // Fandom: LF vs EP=5, SS=5, Crawler=5 (NOT vs SC — that was wrong)
         assert_eq!(
             rapidfire(ShipType::LightFighter, UnitType::Ship(ShipType::EspionageProbe)),
             Some(5)
         );
         assert_eq!(
-            rapidfire(ShipType::LightFighter, UnitType::Ship(ShipType::SmallCargo)),
+            rapidfire(ShipType::LightFighter, UnitType::Ship(ShipType::SolarSatellite)),
             Some(5)
+        );
+        assert_eq!(
+            rapidfire(ShipType::LightFighter, UnitType::Ship(ShipType::Crawler)),
+            Some(5)
+        );
+        assert_eq!(
+            rapidfire(ShipType::LightFighter, UnitType::Ship(ShipType::SmallCargo)),
+            None  // No rapid fire vs SC per authoritative Fandom data
         );
     }
 
@@ -431,31 +459,48 @@ mod tests {
 
     #[test]
     fn reaper_rapidfire() {
-        assert_eq!(
-            rapidfire(ShipType::Reaper, UnitType::Ship(ShipType::SmallCargo)),
-            Some(5)
-        );
-        assert_eq!(
-            rapidfire(ShipType::Reaper, UnitType::Ship(ShipType::LargeCargo)),
-            Some(5)
-        );
+        // Fandom: Reaper vs EP=5, SS=5, Crawler=5, BS=7, Bo=4, De=3
+        // FIXED: previous code had anti-fighter RF (LF=3, HF=2) which was
+        // actually Pathfinder data. Reaper is anti-capital.
         assert_eq!(
             rapidfire(ShipType::Reaper, UnitType::Ship(ShipType::EspionageProbe)),
             Some(5)
         );
         assert_eq!(
-            rapidfire(ShipType::Reaper, UnitType::Ship(ShipType::LightFighter)),
+            rapidfire(ShipType::Reaper, UnitType::Ship(ShipType::SolarSatellite)),
+            Some(5)
+        );
+        assert_eq!(
+            rapidfire(ShipType::Reaper, UnitType::Ship(ShipType::Crawler)),
+            Some(5)
+        );
+        assert_eq!(
+            rapidfire(ShipType::Reaper, UnitType::Ship(ShipType::Battleship)),
+            Some(7)
+        );
+        assert_eq!(
+            rapidfire(ShipType::Reaper, UnitType::Ship(ShipType::Bomber)),
+            Some(4)
+        );
+        assert_eq!(
+            rapidfire(ShipType::Reaper, UnitType::Ship(ShipType::Destroyer)),
             Some(3)
+        );
+        // No RF against light/medium fighters (per Fandom)
+        assert_eq!(
+            rapidfire(ShipType::Reaper, UnitType::Ship(ShipType::LightFighter)),
+            None
         );
         assert_eq!(
             rapidfire(ShipType::Reaper, UnitType::Ship(ShipType::HeavyFighter)),
-            Some(2)
+            None
         );
     }
 
     #[test]
     fn deathstar_rapidfire_full() {
-        // vs ships
+        // Fandom: vs ships
+        // FIXED: BC was 250 (wrong), should be 15
         assert_eq!(
             rapidfire(ShipType::Deathstar, UnitType::Ship(ShipType::SmallCargo)),
             Some(250)
@@ -482,7 +527,15 @@ mod tests {
         );
         assert_eq!(
             rapidfire(ShipType::Deathstar, UnitType::Ship(ShipType::Battlecruiser)),
-            Some(250)
+            Some(15)  // FIXED: was 250, Fandom confirms 15
+        );
+        assert_eq!(
+            rapidfire(ShipType::Deathstar, UnitType::Ship(ShipType::Pathfinder)),
+            Some(30)  // NEW
+        );
+        assert_eq!(
+            rapidfire(ShipType::Deathstar, UnitType::Ship(ShipType::Reaper)),
+            Some(30)  // NEW
         );
         assert_eq!(
             rapidfire(ShipType::Deathstar, UnitType::Ship(ShipType::Bomber)),
@@ -495,6 +548,14 @@ mod tests {
         assert_eq!(
             rapidfire(ShipType::Deathstar, UnitType::Ship(ShipType::EspionageProbe)),
             Some(1_250)
+        );
+        assert_eq!(
+            rapidfire(ShipType::Deathstar, UnitType::Ship(ShipType::SolarSatellite)),
+            Some(1_250)  // NEW
+        );
+        assert_eq!(
+            rapidfire(ShipType::Deathstar, UnitType::Ship(ShipType::Crawler)),
+            Some(1_250)  // NEW
         );
         // vs defenses
         assert_eq!(

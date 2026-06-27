@@ -49,6 +49,8 @@ def list_ships() -> dict:
         {"key": "reaper", "name": "Reaper"},
         {"key": "recycler", "name": "Recycler"},
         {"key": "espionage_probe", "name": "Espionage Probe"},
+        {"key": "solar_satellite", "name": "Solar Satellite"},
+        {"key": "crawler", "name": "Crawler"},
     ]}
 
 

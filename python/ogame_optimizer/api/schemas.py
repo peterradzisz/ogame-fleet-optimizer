@@ -11,7 +11,7 @@ class ShipCounts(BaseModel):
     @field_validator("ships")
     @classmethod
     def validate_ships(cls, v: Dict[str, int]) -> Dict[str, int]:
-        valid = {"small_cargo", "large_cargo", "light_fighter", "heavy_fighter", "cruiser", "battleship", "battlecruiser", "bomber", "destroyer", "deathstar", "pathfinder", "recycler", "espionage_probe", "reaper"}
+        valid = {"small_cargo", "large_cargo", "light_fighter", "heavy_fighter", "cruiser", "battleship", "battlecruiser", "bomber", "destroyer", "deathstar", "pathfinder", "reaper", "recycler", "espionage_probe", "solar_satellite", "crawler"}
         for k, val in v.items():
             if k not in valid:
                 raise ValueError(f"Unknown ship type: {k}")
