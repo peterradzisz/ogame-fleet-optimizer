@@ -56,6 +56,16 @@ class OptimizeRequest(BaseModel):
     debris_pct: float = 0.30
     deuterium_in_debris: bool = False
     optimization_target: str = "maximize_profit"
+    # Minimum gain after recycling, as a percentage (0-100).
+    # 0 = no constraint (default, backward compatible).
+    # > 0 = hard constraint: the optimizer rejects any fleet whose
+    #   (debris_total - loss) / fleet_value is below this percentage.
+    # The constraint is applied AS A HARD GATE in the GA fitness function
+    # (fleets below threshold get fitness = -inf). Combined with the
+    # existing 95% win-probability gate, this guarantees the recommended
+    # fleet meets both survival and ROI thresholds (when possible).
+    # Common values: 0 (disabled), 10, 20, 30, 40, 50, ... 100.
+    min_gain_pct: float = 0.0
     # Resource preference multipliers (M, C, D). Default 2:1:1 biases toward
     # metal-heavy fleets when combat performance is similar. 1:1:1 disables.
     # Step 0.1; values must be non-negative.
@@ -82,6 +92,13 @@ class OptimizeRequest(BaseModel):
     def validate_mode(cls, v: str) -> str:
         if v not in ("attack", "defend"):
             raise ValueError(f"mode must be attack or defend, got {v}")
+        return v
+
+    @field_validator("min_gain_pct")
+    @classmethod
+    def validate_min_gain(cls, v: float) -> float:
+        if v < 0 or v > 100:
+            raise ValueError(f"min_gain_pct must be in [0, 100], got {v}")
         return v
 
 
@@ -121,6 +138,12 @@ class OptimizeResponse(BaseModel):
     resource_preference_penalty: float = 0.0
     resource_preference_match_score: float = 1.0
     raw_loss_mean: float = 0.0
+    # min_gain constraint result
+    min_gain_required: float = 0.0     # echo back the constraint
+    min_gain_met: bool = True            # True if recommended fleet meets it
+    # Actual ROI of the recommended fleet = (debris - loss) / fleet_value * 100
+    # (already in net_profit_pct, but provided under a more descriptive name)
+    actual_roi_pct: float = 0.0
 
 
 class CombatRequest(BaseModel):

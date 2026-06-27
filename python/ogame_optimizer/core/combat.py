@@ -120,6 +120,14 @@ from ogame_optimizer.core.fast_combat import (
     simulate_combat_fast, simulate_batch_fast, evaluate_population_fast,
     should_use_fast,
 )
+from ogame_optimizer.core.fleet import SHIPS_COST as _SHIPS_COST
+
+# Precompute total cost (M+C+D) per ship at module level so per-call
+# fleet_value computation is a single dict lookup + sum (no nested calls).
+_SHIP_TOTAL_COST: dict[str, int] = {
+    s: (cost[0] + cost[1] + cost[2]) if isinstance(cost, (tuple, list)) else int(cost)
+    for s, cost in _SHIPS_COST.items()
+}
 
 
 # Pathfinder, Solar Satellite, Crawler now in Rust ShipType enum
@@ -232,6 +240,12 @@ def simulate_batch(
         _dm_sum = _dc_sum = _dd_sum = 0
         _atk_surv: dict[str, float] = defaultdict(float)
         _def_surv: dict[str, float] = defaultdict(float)
+        # Compute attacker's initial fleet value (cost in M+C+D of all ships).
+        # Uses precomputed _SHIP_TOTAL_COST lookup for O(1) per ship.
+        _atk_initial_value = sum(
+            _SHIP_TOTAL_COST.get(s, 0) * c
+            for s, c in (_stripped_a or {}).items() if c > 0
+        )
         for k in range(K):
             detail = _translate_result(_rust.simulate_combat_py(
                 _normalize_ship_keys(_strip_unknown_for_rust(attacker)),
@@ -258,6 +272,7 @@ def simulate_batch(
         result["debris_crystal"] = int(_dc_sum / K)
         result["debris_deuterium"] = int(_dd_sum / K)
         result["debris_total"] = int((_dm_sum + _dc_sum + _dd_sum) / K)
+        result["fleet_value"] = _atk_initial_value
         # Per-type MEAN survivors (fractional) — callers can convert to
         # integer counts or survival percentages as needed.
         result["attacker_survivors_mean"] = {s: n / K for s, n in _atk_surv.items()}
@@ -269,6 +284,7 @@ def simulate_batch(
         result["debris_total"] = 0
         result["attacker_survivors_mean"] = {}
         result["defender_survivors_mean"] = {}
+        result["fleet_value"] = 0
 
     return result
 

@@ -278,6 +278,7 @@ def compute_fitness(
     batch_result: dict[str, Any],
     mode: str,
     budget: int,
+    min_gain_pct: float = 0.0,
 ) -> float:
     """Convert a batch result into a scalar fitness the GA maximises.
 
@@ -338,6 +339,21 @@ def compute_fitness(
             raise KeyError(f"batch_result missing required key {key!r}")
 
     win_prob = float(batch_result["win_probability"])
+
+    # min_gain hard constraint check (applies to both attack and defend modes).
+    # ROI = (debris_total - loss) / fleet_value * 100
+    # For defend mode, "loss" here is mean_defender_loss (the defender's own loss).
+    # batch_result["fleet_value"] is the initial attacker fleet value.
+    if min_gain_pct > 0:
+        _fv = float(batch_result.get("fleet_value", 0))
+        if _fv > 0:
+            _dt = float(batch_result.get("debris_total", 0))
+            # Use attacker loss for attack, defender loss for defend
+            _loss_for_roi = float(batch_result.get(
+                "mean_attacker_loss" if mode_str == "attack" else "mean_defender_loss", 0))
+            _roi_pct = ((_dt - _loss_for_roi) / _fv) * 100
+            if _roi_pct < min_gain_pct:
+                return float("-inf")
 
     if mode_str == "attack":
         prob_ok = win_prob

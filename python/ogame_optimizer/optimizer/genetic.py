@@ -145,6 +145,7 @@ def _evaluate_population_with_crn(
     loss_scale: float = 1.0,
     resource_weights: tuple = (1.0, 1.0, 1.0),
     preference_beta: float = 0.0,
+    min_gain_pct: float = 0.0,
 ) -> List[float]:
     """Evaluate all fleets in population using CRN (same base_seed for all)."""
     results = evaluate_population(
@@ -160,6 +161,15 @@ def _evaluate_population_with_crn(
     for i, r in enumerate(results):
         mean_loss = r.get("mean_attacker_loss", 0)
         win_prob = r.get("win_probability", 0)
+        # Compute ROI for the min_gain constraint check.
+        # ROI = (debris - loss) / fleet_value * 100
+        _fleet_value = float(r.get("fleet_value", 0))
+        _debris_total = float(r.get("debris_total", 0))
+        _roi_pct = ((_debris_total - mean_loss) / _fleet_value * 100) if _fleet_value > 0 else 0.0
+        # min_gain hard constraint: if ROI below threshold, reject (fitness = -inf)
+        if min_gain_pct > 0 and _roi_pct < min_gain_pct:
+            fitnesses.append(float("-inf"))
+            continue
         if mode == ObjectiveMode.ATTACK:
             if win_prob < 0.95:
                 fitnesses.append(float("-inf"))
@@ -192,6 +202,7 @@ def genetic_optimize(
     loss_scale: float = 1.0,
     resource_weights: tuple = (1.0, 1.0, 1.0),
     preference_beta: float = 0.0,
+    min_gain_pct: float = 0.0,
 ) -> GAResult:
     """Run the GA pipeline."""
     if config is None:
@@ -230,6 +241,7 @@ def genetic_optimize(
             loss_scale=loss_scale,
             resource_weights=resource_weights,
             preference_beta=preference_beta,
+            min_gain_pct=min_gain_pct,
         )
         total_evals += len(fitnesses)
         last_fitnesses = fitnesses

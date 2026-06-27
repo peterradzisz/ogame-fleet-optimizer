@@ -52,6 +52,10 @@ class OptimizationResult:
     fleet_analysis: Dict[str, Dict[str, float]] = field(default_factory=dict)
     defender_fleet_analysis: Dict[str, Dict[str, float]] = field(default_factory=dict)
     raw_loss_mean: float = 0.0
+    # min_gain constraint result
+    min_gain_required: float = 0.0
+    min_gain_met: bool = True
+    actual_roi_pct: float = 0.0
     resource_weights: tuple[float, float, float] = (1.0, 1.0, 1.0)
     preference_beta: float = 0.05
     fleet_weighted_value: float = 0.0
@@ -279,6 +283,10 @@ def optimize(
     debris_pct: float = 0.30,
     deuterium_in_debris: bool = False,
     optimization_target: str = "maximize_profit",
+    # Hard constraint: minimum return after recycling as a percentage of
+    # fleet value. 0 = disabled (default). When > 0, the optimizer only
+    # accepts fleets whose actual ROI >= this threshold.
+    min_gain_pct: float = 0.0,
     hyperspace_tech: int = 11,
     resource_weights: tuple[float, float, float] = (2.0, 1.0, 1.0),
     preference_beta: float = 0.05,
@@ -296,7 +304,8 @@ def optimize(
     # In profit mode, effective loss = raw_loss * (1 - debris_pct)
     # because debris_pct of your losses are recyclable
     _loss_scale = (1.0 - debris_pct) if optimization_target == "maximize_profit" else 1.0
-    _log.info("Target: %s (loss_scale=%.2f, debris_pct=%.0f%%)", optimization_target, _loss_scale, debris_pct * 100)
+    _log.info("Target: %s (loss_scale=%.2f, debris_pct=%.0f%%, min_gain_pct=%.1f%%)",
+              optimization_target, _loss_scale, debris_pct * 100, min_gain_pct)
     _log.info("Resource weights: M=%.2f C=%.2f D=%.2f (composition penalty, beta=%.2f)",
               resource_weights[0], resource_weights[1], resource_weights[2], preference_beta)
     _validate_inputs(enemy_fleet, enemy_defenses, budget)
@@ -419,6 +428,7 @@ def optimize(
             loss_scale=_loss_scale,
             resource_weights=resource_weights,
             preference_beta=preference_beta,
+            min_gain_pct=min_gain_pct,
         )
 
         # Quick validate
@@ -470,6 +480,7 @@ def optimize(
             loss_scale=_loss_scale,
             resource_weights=resource_weights,
             preference_beta=preference_beta,
+            min_gain_pct=min_gain_pct,
         )
 
         validation = simulate_batch(
@@ -531,6 +542,24 @@ def optimize(
               float(final.get("mean_attacker_loss", 0)),
               float(final.get("stddev_attacker_loss", 0)),
               float(final.get("win_probability", 0)))
+
+    # === min_gain constraint: verify the recommended fleet meets the threshold ===
+    # ROI = (debris_total - loss) / fleet_value
+    # We compute it from the final validation result and compare against the
+    # user-specified min_gain_pct. Log a WARNING if not met (optimizer failed).
+    _final_fleet_value_check = _fv(ga_result.best_fleet)
+    _final_debris = int(final.get("debris_total", 0))
+    _final_loss = float(final.get("mean_attacker_loss", 0))
+    _final_roi_pct = ((_final_debris - _final_loss) / _final_fleet_value_check * 100) if _final_fleet_value_check > 0 else 0.0
+    _min_gain_met = (_final_roi_pct >= min_gain_pct) if min_gain_pct > 0 else True
+    if min_gain_pct > 0:
+        if _min_gain_met:
+            _log.info("min_gain constraint: MET (ROI=%.1f%% >= required=%.1f%%)",
+                      _final_roi_pct, min_gain_pct)
+        else:
+            _log.warning("min_gain constraint: NOT MET (ROI=%.1f%% < required=%.1f%%). "
+                         "No fleet within budget could satisfy both win-rate and ROI constraints.",
+                         _final_roi_pct, min_gain_pct)
 
     mean_loss_raw = float(final.get("mean_attacker_loss", 0))
     # Apply resource-preference tiebreaker to displayed loss so it matches what
@@ -642,6 +671,9 @@ def optimize(
         debris_deuterium=int(final.get("debris_deuterium", 0)),
         debris_total=int(final.get("debris_total", 0)),
         raw_loss_mean=mean_loss_raw,
+        min_gain_required=min_gain_pct,
+        min_gain_met=_min_gain_met,
+        actual_roi_pct=_final_roi_pct,
         resource_weights=tuple(resource_weights),
         preference_beta=preference_beta,
         fleet_weighted_value=_final_wv,

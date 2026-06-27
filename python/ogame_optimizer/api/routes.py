@@ -126,6 +126,7 @@ def run_optimize(req: OptimizeRequest) -> OptimizeResponse:
             preference_beta=req.preference_beta if req.preference_beta is not None else 0.05,
             hyperspace_tech=req.hyperspace_tech,
             collector_class=req.collector_class,
+            min_gain_pct=req.min_gain_pct,
         )
         _log.info("Optimize result: fleet=%s win_prob=%.3f loss_mean=%.0f time=%.2fs",
                   result.recommended_fleet, result.win_probability, result.expected_loss_mean, result.total_time)
@@ -165,6 +166,9 @@ def run_optimize(req: OptimizeRequest) -> OptimizeResponse:
             fleet_weighted_value=result.fleet_weighted_value,
             resource_preference_penalty=result.resource_preference_penalty,
             resource_preference_match_score=result.resource_preference_match_score,
+            min_gain_required=result.min_gain_required,
+            min_gain_met=result.min_gain_met,
+            actual_roi_pct=result.actual_roi_pct,
         )
     except ValueError as e:
         _log.warning("Optimize validation error: %s", e)

@@ -101,6 +101,7 @@
         debris_pct: parseFloat((document.getElementById('debris_pct')||{value:'0.30'}).value || '0.30'),
         deuterium_in_debris: document.getElementById('deut_in_debris') ? document.getElementById('deut_in_debris').checked : false,
         optimization_target: (document.getElementById('optimization_target')||{value:'maximize_profit'}).value || 'maximize_profit',
+        min_gain_pct: parseFloat((document.getElementById('min_gain_pct')||{value:'0'}).value || '0'),
         hyperspace_tech: parseInt((document.getElementById('hyperspace_tech')||{value:'0'}).value || '0'),
         collector_class: document.getElementById('collector_class') ? document.getElementById('collector_class').checked : false,
         resource_weights: [
@@ -164,6 +165,17 @@
     var netSign = netP >= 0 ? "+" : "";
     var netLabel = netP >= 0 ? "Net Profit (if recycled)" : "NET LOSS (if recycled)";
     cards.push([netLabel, netSign + fmtNum(netP) + " (" + netSign + netPct.toFixed(1) + "%)", netClass]);
+    if (data.min_gain_required != null && data.min_gain_required > 0) {
+      var mgMet = data.min_gain_met;
+      var mgRoi = data.actual_roi_pct || 0;
+      var mgClass = mgMet ? "win-green" : "win-red";
+      var mgLabel = mgMet ? "Min Gain Met" : "Min Gain NOT Met";
+      cards.push([
+        mgLabel + " (required: " + data.min_gain_required.toFixed(0) + "%)",
+        "Actual ROI: " + (mgRoi >= 0 ? "+" : "") + mgRoi.toFixed(1) + "%",
+        mgClass
+      ]);
+    }
     if (data.recyclers_needed > 0) {
       var rcT = data.recyclers_cost_total || 0;
       var recLabel = fmtNum(data.recyclers_needed) + " (cap " + fmtNum(data.recycler_capacity) + " each)";
