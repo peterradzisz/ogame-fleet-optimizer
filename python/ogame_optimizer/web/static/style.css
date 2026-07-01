@@ -193,3 +193,43 @@ textarea:focus { outline: 2px solid #8aa9ff; outline-offset: 1px; }
   color: #6c7891;
   margin-top: 0.15rem;
 }
+
+/* ---- Copy table buttons ---- */
+.copy-btns { margin-left: 0.5em; }
+.copy-btn {
+  font-size: 0.75em;
+  padding: 2px 8px;
+  margin-left: 4px;
+  border: 1px solid #4a5568;
+  border-radius: 4px;
+  background: #1a1a2e;
+  color: #a0aec0;
+  cursor: pointer;
+  vertical-align: middle;
+  transition: all 0.15s;
+}
+.copy-btn:hover {
+  background: #2a2a4e;
+  color: #e2e8f0;
+  border-color: #6366f1;
+}
+.copy-toast {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #2a2a4e;
+  color: #4ade80;
+  padding: 10px 24px;
+  border-radius: 8px;
+  border: 1px solid #4ade80;
+  font-size: 14px;
+  font-family: sans-serif;
+  z-index: 9999;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s;
+}
+.copy-toast.copy-toast-show {
+  opacity: 1;
+}

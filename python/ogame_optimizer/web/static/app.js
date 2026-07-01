@@ -488,4 +488,141 @@ if (parseBtn) {
       betaLabel.textContent = parseFloat(betaSlider.value).toFixed(2);
     });
   }
+
+  // ---- Copy table to clipboard (for OGame boards, Discord, etc.) ----
+
+  function copyToClipboard(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function() {
+        showToast("Copied to clipboard!");
+      }).catch(function() { fallbackCopy(text); });
+    } else {
+      fallbackCopy(text);
+    }
+  }
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); showToast("Copied!"); }
+    catch (e) { showToast("Copy failed - select and Ctrl+C"); }
+    document.body.removeChild(ta);
+  }
+  var toastTimer = null;
+  function showToast(msg) {
+    var t = document.getElementById("copy-toast");
+    if (!t) return;
+    t.textContent = msg;
+    t.classList.add("copy-toast-show");
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function() { t.classList.remove("copy-toast-show"); }, 2000);
+  }
+
+  function padR(str, len) { str = String(str); while (str.length < len) str += " "; return str; }
+  function padL(str, len) { str = String(str); while (str.length < len) str = " " + str; return str; }
+
+  function buildTextTable(headers, dataRows) {
+    var allRows = [headers].concat(dataRows);
+    var widths = [];
+    for (var c = 0; c < headers.length; c++) {
+      var w = 0;
+      for (var r = 0; r < allRows.length; r++) {
+        if (allRows[r][c] && String(allRows[r][c]).length > w) w = String(allRows[r][c]).length;
+      }
+      widths.push(w);
+    }
+    var lines = [];
+    for (var r = 0; r < allRows.length; r++) {
+      var cells = [];
+      for (var c = 0; c < allRows[r].length; c++) {
+        var val = allRows[r][c] || "";
+        cells.push(c === 0 ? padR(val, widths[c]) : padL(val, widths[c]));
+      }
+      lines.push(cells.join(" | "));
+    }
+    return lines.join("\n");
+  }
+
+  function buildHtmlTable(headers, dataRows, title) {
+    var h = '<table style="border-collapse:collapse;font-family:monospace;font-size:13px">';
+    if (title) h += '<caption style="caption-side:top;font-weight:bold;padding:4px;text-align:left">' + title + '</caption>';
+    h += "<thead><tr>";
+    for (var i = 0; i < headers.length; i++) h += '<th style="border:1px solid #555;padding:3px 8px;background:#2a2a4a;color:#e0e0e0">' + headers[i] + "</th>";
+    h += "</tr></thead><tbody>";
+    for (var r = 0; r < dataRows.length; r++) {
+      h += "<tr>";
+      for (var c = 0; c < dataRows[r].length; c++) {
+        var align = c === 0 ? "left" : "right";
+        h += '<td style="border:1px solid #555;padding:3px 8px;text-align:' + align + '">' + dataRows[r][c] + "</td>";
+      }
+      h += "</tr>";
+    }
+    h += "</tbody></table>";
+    return h;
+  }
+
+  function copyFleetTable(format) {
+    if (!lastResult) return;
+    var fleet = lastResult.recommended_fleet || {};
+    var analysis = lastResult.fleet_analysis || {};
+    var rows = [];
+    var totalCost = 0;
+    for (var k in fleet) {
+      if (!fleet[k] || fleet[k] <= 0) continue;
+      totalCost += shipCost(k) * fleet[k];
+    }
+    for (var k in fleet) {
+      if (!fleet[k] || fleet[k] <= 0) continue;
+      var info = analysis[k] || {};
+      var impact = info.impact_pct != null ? (info.impact_pct > 0 ? "+" : "") + info.impact_pct.toFixed(1) + "%" : "-";
+      var survPct = info.survival_pct;
+      var survCount = survPct != null ? Math.round(fleet[k] * survPct / 100) : null;
+      var surv = survPct != null ? fmtNum(survCount) + " (" + survPct.toFixed(1) + "%)" : "-";
+      var costPct = totalCost > 0 ? (shipCost(k) * fleet[k] / totalCost * 100).toFixed(1) + "%" : "-";
+      rows.push({
+        sort: info.impact_pct != null ? info.impact_pct : -Infinity,
+        cells: [k.replace(/_/g, " "), fmtNum(fleet[k]), costPct, impact, surv]
+      });
+    }
+    rows.sort(function(a, b) { return b.sort - a.sort; });
+    var headers = ["Ship", "Count", "Cost %", "Impact %", "Surviving"];
+    var data = rows.map(function(r) { return r.cells; });
+    var text = format === "html"
+      ? buildHtmlTable(headers, data, "Recommended Fleet")
+      : buildTextTable(headers, data);
+    copyToClipboard(text);
+  }
+
+  function copyDefenderTable(format) {
+    if (!lastResult) return;
+    var defAnalysis = lastResult.defender_fleet_analysis || {};
+    var keys = Object.keys(defAnalysis);
+    if (keys.length === 0) return;
+    keys.sort(function(a, b) {
+      var ca = (defAnalysis[a] && defAnalysis[a].count) || 0;
+      var cb = (defAnalysis[b] && defAnalysis[b].count) || 0;
+      return cb - ca;
+    });
+    var totalDefCost = 0;
+    for (var d = 0; d < keys.length; d++) totalDefCost += shipCost(keys[d]) * ((defAnalysis[keys[d]] || {}).count || 0);
+    var rows = [];
+    for (var d = 0; d < keys.length; d++) {
+      var info = defAnalysis[keys[d]];
+      var cnt = (info && info.count) || 0;
+      var survPct = info && info.survival_pct;
+      var survCount = info && info.surviving_count != null ? info.surviving_count : 0;
+      var surv = survPct != null ? fmtNum(survCount) + " (" + survPct.toFixed(1) + "%)" : "-";
+      var costPct = totalDefCost > 0 ? (shipCost(keys[d]) * cnt / totalDefCost * 100).toFixed(1) + "%" : "-";
+      rows.push([keys[d].replace(/_/g, " "), fmtNum(cnt), costPct, surv]);
+    }
+    var headers = ["Ship", "Count", "Cost %", "Surviving"];
+    var text = format === "html"
+      ? buildHtmlTable(headers, rows, "Defender Fleet (Enemy)")
+      : buildTextTable(headers, rows);
+    copyToClipboard(text);
+  }
+
 })();
