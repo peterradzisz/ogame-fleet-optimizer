@@ -261,17 +261,23 @@ def _make_side(fleet: Dict[str, int], defenses: Dict[str, int], tech: Tuple[int,
 
 
 def _fire(attacker_side: dict, defender_side: dict, rng: random.Random):
-    """Grouped fire: all attacker types' damage to each defender type is
-    aggregated BEFORE resolving shields and hull.
+    """Grouped fire with per-shot overkill handling.
 
-    This eliminates the sequential fire ordering bias where attacker type A
-    depletes defender shields and attacker type B fires through the gap.
-    Instead, all incoming damage is summed per defender type, then resolved
-    in one pass: shields absorb first, overflow to hull.
+    All attacker types' fire against each defender type is resolved in one
+    pass (eliminating sequential fire-ordering bias), but damage is split
+    into two regimes so high-damage single-target weapons behave correctly:
 
-    Rapidfire model: if ship A has RF=N against type B, and fraction of B
-    in defenders is f, then A's expected shot multiplier is
-    1 / (1 - f * N/(N+1)). Extra shots distribute proportionally.
+    * SPIKE - shots that deal >= a defender unit's full HP each kill exactly
+      one unit (overkill discarded). Previously the pooled-damage model
+      recycled this overkill, making Deathstars etc. absurdly strong vs
+      swarms.
+    * CHIP  - sub-lethal shots pool into the defender stack's shield then
+      hull (law of large numbers).
+
+    Rapidfire model: if ship A has RF=N against type B present at fraction
+    f, A's continuation probability is f*(N-1)/N, so its expected shot
+    multiplier is 1 / (1 - sum_f (N-1)/N) = N for a pure target. This
+    matches the Rust core and ogamespec.
     """
     total_def_count = sum(u["count"] for u in defender_side.values())
     if total_def_count == 0:
@@ -282,69 +288,117 @@ def _fire(attacker_side: dict, defender_side: dict, rng: random.Random):
     for k, d in defender_side.items():
         fractions[k] = d["count"] / total_def_count if d["count"] > 0 else 0.0
 
-    # Pre-compute rapidfire shot multipliers for each attacker type
+    # Pre-compute rapidfire shot multipliers for each attacker type.
+    #
+    # FIX: continuation probability per RF target is (rf-1)/rf, giving an
+    # expected shot count of `rf` (e.g. RF=15 -> 15 shots). This matches the
+    # Rust core and the ogamespec authoritative source. The previous formula
+    # rf/(rf+1) yielded rf+1 expected shots, a ~6.7% overestimate for RF=15
+    # and an internal inconsistency with the Rust resolver.
     atk_info = {}
     for k_atk, atk in attacker_side.items():
         if atk["count"] == 0 or atk["atk"] <= 0:
             continue
-        rf_bonus = 0.0
+        cont_prob = 0.0
         for k_def, frac in fractions.items():
             rf = RAPIDFIRE.get((k_atk, k_def), 0)
-            if rf > 0 and frac > 0:
-                rf_bonus += frac * rf / (rf + 1)
-        shot_multiplier = 1.0 / (1.0 - rf_bonus) if rf_bonus < 0.95 else 20.0
+            if rf > 1 and frac > 0:
+                cont_prob += frac * (rf - 1) / rf
+        # Cap the multiplier at 20x for numerical stability against very
+        # large RF values (e.g. Deathstar vs Espionage Probe = 1250).
+        shot_multiplier = 1.0 / (1.0 - cont_prob) if cont_prob < 0.95 else 20.0
         atk_info[k_atk] = (atk["atk"], atk["count"] * shot_multiplier)
 
-    # For each defender type: aggregate ALL incoming damage, then resolve
+    # For each defender type: resolve incoming fire with per-shot overkill
+    # handling.
+    #
+    # Two regimes are modelled per (attacker_type, defender_type) pair:
+    #
+    # * SPIKE - a single shot deals >= one defender unit's full effective HP
+    #   (shield + hull). In real OGame each such shot kills exactly ONE unit
+    #   and the excess damage is wasted. The previous implementation pooled
+    #   ALL damage and divided by per-unit HP, which recycled that excess and
+    #   made high-damage weapons (notably the 200k-attack Deathstar) vastly
+    #   too lethal vs swarms of cheap ships (e.g. 223 RIPs "wiping" 123k BCs).
+    #
+    # * CHIP - a single shot is sub-lethal. Damage accumulates in a pool
+    #   (shield first, then hull); this is the law-of-large-numbers regime
+    #   where the analytical approximation is valid.
+    #
+    # Spike kills are resolved first (each consumes one whole unit, bypassing
+    # the shared shield pool), then chip damage wears down the survivors.
     for k_def, d in defender_side.items():
-        if d["count"] == 0 or fractions[k_def] == 0:
+        if d["count"] == 0 or fractions.get(k_def, 0.0) == 0.0:
             continue
+        frac = fractions[k_def]
+        count = d["count"]
+        unit_shield = d["base_shield"]   # full per-unit shield (regen'd)
+        unit_hull = d["unit_hull"]       # full per-unit hull
+        # Survivors are reset to full hull each round (see hull reset below),
+        # so every surviving unit presents unit_shield + unit_hull of HP.
+        unit_eff_hp = unit_shield + unit_hull
 
-        total_dmg = 0.0
+        spike_kills = 0.0   # shots that each obliterate one whole unit
+        chip_dmg = 0.0      # accumulated sub-lethal damage
 
         for k_atk, (per_shot, effective_shots) in atk_info.items():
-            # OGame shield bounce: shot < 1% of max shield -> wasted
-            if per_shot < d["base_shield"] * 0.01:
+            # OGame shield bounce: a shot below 1% of the unit's max shield
+            # is completely absorbed and wasted.
+            if per_shot < unit_shield * 0.01:
                 continue
-
-            shots_at_type = effective_shots * fractions[k_def]
-            if shots_at_type < 0.5:
+            shots = effective_shots * frac
+            if shots < 0.5:
                 continue
+            if per_shot >= unit_eff_hp:
+                # SPIKE: one shot kills one unit; overkill is discarded.
+                spike_kills += shots
+            else:
+                # CHIP: pools into shield/hull of the surviving stack.
+                chip_dmg += per_shot * shots
 
-            total_dmg += per_shot * shots_at_type
-
-        if total_dmg <= 0:
+        # Resolve spike kills. Each consumes one whole unit (its shield AND
+        # its hull), so this damage never enters the shared shield pool.
+        kills = min(spike_kills, count)
+        survivors = count - kills
+        if survivors <= 0:
+            d["count"] = 0
+            d["hull"] = 0
+            d["shields"] = 0
             continue
 
-        # Gaussian noise on aggregate damage
-        sigma = math.sqrt(max(total_dmg * (1 - fractions[k_def]), 1))
-        actual_dmg = max(0.0, total_dmg + rng.gauss(0, sigma))
+        # Apply chip damage to the survivors' pooled shield, then hull.
+        if chip_dmg > 0:
+            sigma = math.sqrt(max(chip_dmg * (1.0 - frac), 1.0))
+            chip_dmg = max(0.0, chip_dmg + rng.gauss(0.0, sigma))
+            shield_pool = unit_shield * survivors
+            absorbed = min(chip_dmg, shield_pool)
+            hull_dmg = chip_dmg - absorbed
+        else:
+            hull_dmg = 0.0
 
-        # Shield absorbs first, overflow to hull (resolved ONCE, not per attacker)
-        absorbed = min(actual_dmg, d["shields"])
-        d["shields"] -= absorbed
-        hull_dmg = actual_dmg - absorbed
+        hull_pool = unit_hull * survivors - hull_dmg
+        if hull_pool <= 0:
+            d["count"] = 0
+            d["hull"] = 0
+            d["shields"] = 0
+            continue
 
-        if hull_dmg > 0:
-            d["hull"] -= hull_dmg
-            if d["hull"] <= 0:
-                d["count"] = 0
-                d["hull"] = 0
-            else:
-                max_hull = d["unit_hull"] * d["count"]
-                if max_hull > 0:
-                    hull_ratio = max(0.0, d["hull"] / max_hull)
-                    # OGame 70% explosion rule: ships below 70% hull
-                    # with shields down have P(explode) = 1 - hull_ratio.
-                    if hull_ratio < 0.7:
-                        explosion_severity = (0.7 - hull_ratio) / 0.7
-                        p_explode = explosion_severity * (1.0 - hull_ratio)
-                        survival = hull_ratio * (1.0 - p_explode)
-                    else:
-                        survival = hull_ratio
-                    new_count = int(d["count"] * survival)
-                    d["count"] = new_count
-                    d["hull"] = d["unit_hull"] * new_count
+        max_hull = unit_hull * survivors
+        hull_ratio = hull_pool / max_hull if max_hull > 0 else 0.0
+        # OGame 70% explosion rule: ships below 70% hull with shields down
+        # have P(explode) proportional to damage taken.
+        if hull_ratio < 0.7:
+            p_explode = ((0.7 - hull_ratio) / 0.7) * (1.0 - hull_ratio)
+            survival_frac = hull_ratio * (1.0 - p_explode)
+        else:
+            survival_frac = hull_ratio
+        new_count = int(survivors * survival_frac)
+        d["count"] = new_count
+        # Reset survivor hull/shield to full (matches prior behaviour: hull
+        # damage does not accumulate across rounds; only the explosion roll
+        # removes units). Shields are also fully regen'd by _regen_shields.
+        d["hull"] = unit_hull * new_count
+        d["shields"] = unit_shield * new_count
 
 
 def _regen_shields(side: dict):
