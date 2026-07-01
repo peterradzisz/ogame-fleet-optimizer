@@ -625,4 +625,9 @@ if (parseBtn) {
     copyToClipboard(text);
   }
 
+
+  // Expose copy functions to global scope for inline onclick handlers
+  window.copyFleetTable = copyFleetTable;
+  window.copyDefenderTable = copyDefenderTable;
+
 })();
