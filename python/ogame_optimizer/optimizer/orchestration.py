@@ -56,6 +56,7 @@ class OptimizationResult:
     min_gain_required: float = 0.0
     min_gain_met: bool = True
     actual_roi_pct: float = 0.0
+    win_threshold_met: bool = True
     resource_weights: tuple[float, float, float] = (1.0, 1.0, 1.0)
     preference_beta: float = 0.05
     fleet_weighted_value: float = 0.0
@@ -574,6 +575,7 @@ def optimize(
                          "No fleet within budget could satisfy both win-rate and ROI constraints.",
                          _final_roi_pct, min_gain_pct)
 
+
     mean_loss_raw = float(final.get("mean_attacker_loss", 0))
     # Apply resource-preference tiebreaker to displayed loss so it matches what
     # the GA actually optimised. The raw mean_loss (without *_loss_scale) is
@@ -582,6 +584,18 @@ def optimize(
     mean_loss = mean_loss_raw * _loss_scale + _best_penalty
     stddev_loss = float(final.get("stddev_attacker_loss", 0))
     win_prob = float(final.get("win_probability", 0.0))
+
+    # Win-threshold check: warn if the scenario is unwinnable at this budget.
+    if mode == "attack":
+        _win_met = win_prob >= 0.95
+    else:
+        _win_met = (1.0 - win_prob) >= 0.95
+    if not _win_met:
+        _log.warning("WIN THRESHOLD NOT MET (win_prob=%.1f%%, need >=95%% for mode=%s). "
+                     "Scenario appears unwinnable at budget_multiplier=%s - the GA optimised "
+                     "for the least-bad outcome (min loss / max enemy debris). "
+                     "Increase budget_multiplier for a winning fleet.",
+                     win_prob * 100, mode, budget_multiplier)
     stderr = stddev_loss / max(1, final_sims ** 0.5)
     ci = [mean_loss - 1.96 * stderr, mean_loss + 1.96 * stderr]
 
@@ -687,6 +701,7 @@ def optimize(
         min_gain_required=min_gain_pct,
         min_gain_met=_min_gain_met,
         actual_roi_pct=_final_roi_pct,
+        win_threshold_met=_win_met,
         resource_weights=tuple(resource_weights),
         preference_beta=preference_beta,
         fleet_weighted_value=_final_wv,

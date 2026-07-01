@@ -6,8 +6,10 @@ from ogame_optimizer.optimizer.genetic import (
     genetic_optimize, GAConfig, _drift_bounds_for_seed,
     _chromosome_to_fleet, _random_chromosome, _uniform_crossover, _gaussian_mutate,
     _reallocate_mutate,
+    _evaluate_population_with_crn,
 )
 from ogame_optimizer.core.fleet import SHIPS_COST, fleet_value
+from ogame_optimizer.optimizer.objective import ObjectiveMode
 
 
 def test_drift_bounds():
@@ -211,3 +213,87 @@ def test_gaussian_mutation_respects_bounds():
         for i, s in enumerate(ships):
             lo, hi = bounds[s]
             assert lo <= out[i] <= hi, f"{s} {out[i]} outside [{lo},{hi}]"
+
+
+
+# ---------------------------------------------------------------------------
+# Graded fitness: losers are now ranked (not -inf), winners outrank losers,
+# and profit mode rewards enemy destruction. These replace the old "give up"
+# behaviour where every losing fleet got -inf and the GA returned noise.
+# ---------------------------------------------------------------------------
+
+
+def test_graded_fitness_losers_finite_and_ranked():
+    """In an unwinnable scenario, losing fleets get FINITE graded fitness
+    (was -inf) and are ranked by how badly they lose. The GA can now optimize
+    toward the least-bad composition instead of returning arbitrary noise."""
+    enemy = {"battlecruiser": 50000}
+    budget = 2_000_000_000  # far too small to beat 50k BCs
+    fleets = [
+        {"deathstar": 200},                        # high survival
+        {"deathstar": 100, "light_fighter": 100_000},
+        {"cruiser": 50_000},                       # conventional, crushed
+    ]
+    fits = _evaluate_population_with_crn(
+        fleets, enemy, {}, (0, 0, 0), (0, 0, 0), budget,
+        ObjectiveMode.ATTACK, n_sims=20, base_seed=42, loss_scale=1.0,
+    )
+    # No -inf — every loser gets a finite, comparable fitness.
+    assert all(f != float("-inf") for f in fits), f"losers must be finite: {fits}"
+    # Ranked — they are NOT all equal.
+    assert len({round(f, 6) for f in fits}) > 1, f"losers must be ranked: {fits}"
+    # Pure deathstar (highest survival) ranks best among losers.
+    assert fits[0] == max(fits), f"pure RIP should rank best: {fits}"
+
+
+def test_graded_fitness_winner_outranks_loser():
+    """A winning fleet must always outrank a losing fleet, no matter the loss.
+    The tier bonus ensures winners dominate."""
+    enemy = {"light_fighter": 500}
+    budget = 5_000_000
+    fleets = [
+        {"cruiser": 100},     # RF 6 vs LF — wins decisively
+        {"light_fighter": 10},  # 10 vs 500 — loses badly
+    ]
+    fits = _evaluate_population_with_crn(
+        fleets, enemy, {}, (0, 0, 0), (0, 0, 0), budget,
+        ObjectiveMode.ATTACK, n_sims=30, base_seed=42, loss_scale=1.0,
+    )
+    assert fits[0] > fits[1], f"winner must outrank loser: {fits}"
+    assert fits[0] > 0, f"winner fitness should be positive (tier bonus): {fits[0]}"
+
+
+def test_graded_fitness_profit_rewards_enemy_destruction():
+    """In profit mode, enemy destruction (debris from kills) boosts fitness.
+    A fleet that deals real damage ranks better than one that doesn't,
+    even though both lose."""
+    enemy = {"battlecruiser": 50_000}
+    budget = 2_000_000_000
+    fleets = [
+        {"deathstar": 200},            # spike-kills many BCs -> enemy debris
+        {"espionage_probe": 2_000_000},  # barely scratches BCs, total annihilation
+    ]
+    fits = _evaluate_population_with_crn(
+        fleets, enemy, {}, (0, 0, 0), (0, 0, 0), budget,
+        ObjectiveMode.ATTACK, n_sims=20, base_seed=42, loss_scale=0.7,  # debris 30%
+    )
+    assert fits[0] > fits[1], (
+        f"deathstars (deal damage) should outrank probes (no damage) in profit mode: {fits}"
+    )
+
+
+def test_graded_fitness_anti_camping():
+    """A tiny fleet that barely uses the budget can't 'minimise losses' by
+    being small — the anti-camping penalty ensures full-budget losing fleets
+    rank higher than campy ones."""
+    enemy = {"battlecruiser": 50_000}
+    budget = 2_000_000_000
+    fleets = [
+        {"deathstar": 200},      # uses ~full budget, fights
+        {"deathstar": 1},        # 1 RIP = 0.05% of budget — camping
+    ]
+    fits = _evaluate_population_with_crn(
+        fleets, enemy, {}, (0, 0, 0), (0, 0, 0), budget,
+        ObjectiveMode.ATTACK, n_sims=20, base_seed=42, loss_scale=1.0,
+    )
+    assert fits[0] > fits[1], f"full-budget fleet must outrank camper: {fits}"

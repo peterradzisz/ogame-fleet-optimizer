@@ -480,7 +480,12 @@ def simulate_combat_fast(
     elif stalemate:
         winner = "Draw"
     else:
-        winner = "Attacker" if atk_total > def_total else "Defender"
+        # OGame rule: if both sides survive 6 rounds, it is a DRAW regardless
+        # of fleet sizes (matches the Rust per-unit core). The previous
+        # 'more ships wins' fallthrough made huge fodder fleets 'beat'
+        # unbeatable enemies just by having more survivors (e.g. 2M probes
+        # 'winning' vs 50k BCs despite bouncing off their shields).
+        winner = "Draw"
 
     return {
         "winner": winner,
@@ -608,6 +613,7 @@ def evaluate_population_fast(
         )
         results.append({
             "mean_attacker_loss": r["mean_attacker_loss"],
+            "mean_defender_loss": r["mean_defender_loss"],
             "stddev_attacker_loss": r["stddev_attacker_loss"],
             "win_probability": r["win_probability"],
             "sims_run": n_sims_per_fleet,

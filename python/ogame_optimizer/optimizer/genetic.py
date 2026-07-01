@@ -287,6 +287,18 @@ def _reallocate_mutate(
     return out
 
 
+# --- Graded fitness constants (replaces the old -inf "give up" behaviour) ---
+# Winners get a large tier bonus so any 95%+ fleet outranks any loser. The
+# bonus is a constant, so ordering among winners is identical to the previous
+# -loss/budget formula. Losers are now ranked by loss (+ enemy debris in profit
+# mode) instead of all being -inf, so the GA can still find the least-bad fleet
+# when the scenario is unwinnable.
+_WIN_THRESHOLD = 0.95
+_WIN_TIER_BONUS = 1000.0
+_UNDERBUDGET_FLOOR = 0.90   # fleets must spend >=90% of budget
+_UNDERBUDGET_PENALTY = 5.0  # per unit of under-utilisation (anti-camping)
+
+
 def _evaluate_population_with_crn(
     population_fleets: List[Dict[str, int]],
     enemy_fleet: Dict[str, int],
@@ -316,30 +328,58 @@ def _evaluate_population_with_crn(
     for i, r in enumerate(results):
         mean_loss = r.get("mean_attacker_loss", 0)
         win_prob = r.get("win_probability", 0)
-        # Compute ROI for the min_gain constraint check.
-        # ROI = (debris - loss) / fleet_value * 100
-        _fleet_value = float(r.get("fleet_value", 0))
+        enemy_loss = r.get("mean_defender_loss", 0)  # 0 on the Rust small-fleet path
+        own_fv = fleet_value(population_fleets[i]) if population_fleets[i] else 0
+
+        # ROI / min_gain hard constraint (unchanged).
+        _r_fv = float(r.get("fleet_value", 0))
         _debris_total = float(r.get("debris_total", 0))
-        _roi_pct = ((_debris_total - mean_loss) / _fleet_value * 100) if _fleet_value > 0 else 0.0
-        # min_gain hard constraint: if ROI below threshold, reject (fitness = -inf)
+        _roi_pct = ((_debris_total - mean_loss) / _r_fv * 100) if _r_fv > 0 else 0.0
         if min_gain_pct > 0 and _roi_pct < min_gain_pct:
             fitnesses.append(float("-inf"))
             continue
+
+        # Skip empty fleets (can't evaluate, can't fight).
+        if own_fv <= 0:
+            fitnesses.append(float("-inf"))
+            continue
+
+        penalty = resource_preference_penalty(
+            population_fleets[i], resource_weights, preference_beta
+        ) if preference_beta > 0 else 0.0
+        # debris_pct is implicit in loss_scale: profit mode sets loss_scale =
+        # 1 - debris_pct, so debris_pct = 1 - loss_scale (0 in minimise mode).
+        debris_pct = max(0.0, 1.0 - loss_scale)
+
+        # Base fitness: -(effective own loss + composition penalty) / budget.
+        # Identical to the previous formula for winners.
+        base = -(mean_loss * loss_scale + penalty) / max(budget, 1)
+
         if mode == ObjectiveMode.ATTACK:
-            if win_prob < 0.95:
-                fitnesses.append(float("-inf"))
-            else:
-                # Negative loss (lower is better, so higher fitness is less negative)
-                penalty = resource_preference_penalty(population_fleets[i], resource_weights, preference_beta) if preference_beta > 0 else 0.0
-                fitnesses.append(-(mean_loss * loss_scale + penalty) / max(budget, 1))
+            meets_threshold = win_prob >= _WIN_THRESHOLD
         else:  # DEFEND
-            survive_prob = 1.0 - win_prob
-            if survive_prob < 0.95:
-                fitnesses.append(float("-inf"))
-            else:
-                # Lower mean attacker loss = better defense
-                penalty = resource_preference_penalty(population_fleets[i], resource_weights, preference_beta) if preference_beta > 0 else 0.0
-                fitnesses.append(-(mean_loss * loss_scale + penalty) / max(budget, 1))
+            meets_threshold = (1.0 - win_prob) >= _WIN_THRESHOLD
+
+        if meets_threshold:
+            # Winner: tier bonus is a constant, so relative ordering among
+            # winners is unchanged from before.
+            fitnesses.append(base + _WIN_TIER_BONUS)
+        else:
+            # Loser: graded fitness (previously -inf). Now ranked by how
+            # badly the fleet loses, so the GA finds the least-bad composition
+            # instead of returning arbitrary noise.
+            #
+            # In profit mode, reward enemy destruction: debris recovered from
+            # the ships you destroyed is real profit. This lets the GA prefer
+            # compositions that deal damage even when they can't win.
+            if debris_pct > 0:
+                base += (enemy_loss * debris_pct) / max(budget, 1)
+            # Anti-camping: penalise fleets that spend <90% of budget, so the
+            # GA can't "minimise losses" by shrinking the fleet to nothing.
+            util = own_fv / max(budget, 1)
+            if util < _UNDERBUDGET_FLOOR:
+                base -= (_UNDERBUDGET_FLOOR - util) * _UNDERBUDGET_PENALTY
+            fitnesses.append(base)
     return fitnesses
 
 
