@@ -269,6 +269,55 @@ def _rust_verify(
 
 
 
+def _prune_dead_weight(
+    fleet: Dict[str, int],
+    sensitivity: Dict[str, Dict],
+    threshold: float = -5.0,
+) -> tuple:
+    """Build a pruned fleet with dead-weight ships removed and budget redistributed.
+
+    Uses the sensitivity analysis to identify ships whose removal IMPROVES the
+    fleet (impact < threshold). Redistributes their freed budget to the
+    highest-impact positive ship. This is the "drop the negative %, add to the
+    positive best" move the GA can't reliably make in a single pass because its
+    reallocate operator works incrementally (15-60% per step) rather than
+    wholesale-eliminating a ship type.
+
+    Returns (pruned_fleet, pruned_ship_names). Returns (None, []) if nothing
+    to prune or the prune would leave the fleet empty.
+    """
+    dead_weight = sorted(
+        [(s, info.get("impact_pct", 0))
+         for s, info in sensitivity.items()
+         if isinstance(info, dict) and info.get("impact_pct", 0) < threshold],
+        key=lambda x: x[1],  # worst (most negative) first
+    )
+    if not dead_weight:
+        return None, []
+
+    pruned_names = {s for s, _ in dead_weight}
+    pruned = {s: c for s, c in fleet.items() if s not in pruned_names and c > 0}
+    if not pruned:
+        return None, []
+
+    # Redistribute freed budget to the highest-impact POSITIVE ship present.
+    positive = [(s, sensitivity[s].get("impact_pct", 0))
+                for s in pruned
+                if s in sensitivity and isinstance(sensitivity[s], dict)
+                and sensitivity[s].get("impact_pct", 0) > 0]
+    if positive:
+        target = max(positive, key=lambda x: x[1])[0]
+    else:
+        target = max(pruned, key=lambda s: sum(SHIPS_COST.get(s, (0, 0, 0))) * pruned[s])
+
+    freed = sum(sum(SHIPS_COST.get(s, (0, 0, 0))) * fleet.get(s, 0) for s in pruned_names)
+    target_cost = sum(SHIPS_COST.get(target, (0, 0, 0)))
+    if target_cost > 0 and freed > 0:
+        pruned[target] = pruned.get(target, 0) + freed // target_cost
+
+    return pruned, list(pruned_names)
+
+
 def optimize(
     enemy_fleet: Dict[str, int],
     enemy_defenses: Optional[Dict[str, int]] = None,
@@ -536,6 +585,80 @@ def optimize(
         _fleet = {k: max(0, int(v * scale)) for k, v in ga_result.best_fleet.items() if int(v * scale) > 0}
         ga_result.best_fleet = _fleet
         _log.info("Budget scaled to: %d", _fv(ga_result.best_fleet))
+
+    # Phase C: Prune dead-weight ships and refine from the cleaned fleet.
+    # The GA explores incrementally and can't reliably wholesale-eliminate a
+    # ship type in 5s. The sensitivity analysis identifies exactly which ships
+    # hurt (negative impact); this phase acts on that finding by dropping them,
+    # redistributing their budget to the best positive-impact ship, and running
+    # a short GA refinement from the pruned starting point.
+    _log.info("--- Phase C: Prune & refine ---")
+    _prune_t0 = time.time()
+    if ga_time_budget >= 1.5 and len([c for c in ga_result.best_fleet.values() if c > 0]) > 2:
+        _prune_base = simulate_batch(
+            attacker=ga_result.best_fleet, defender=enemy_fleet,
+            defender_defenses=enemy_defenses, attacker_tech=attacker_tech,
+            defender_tech=enemy_tech, n_sims=100, base_seed=base_seed + 7777,
+            debris_pct=debris_pct, deuterium_in_debris=deuterium_in_debris,
+        )
+        _prune_base_loss = float(_prune_base.get("mean_attacker_loss", 0))
+        _prune_sens = _sensitivity_analysis(
+            fleet=ga_result.best_fleet, enemy_fleet=enemy_fleet,
+            enemy_defenses=enemy_defenses, attacker_tech=attacker_tech,
+            enemy_tech=enemy_tech, base_loss=_prune_base_loss,
+            debris_pct=debris_pct, deuterium_in_debris=deuterium_in_debris,
+            base_seed=base_seed, n_sims=50,
+        )
+        _pruned, _pruned_names = _prune_dead_weight(ga_result.best_fleet, _prune_sens)
+        if _pruned and sum(_pruned.values()) > 0:
+            _log.info("  Pruning %d dead-weight ships: %s", len(_pruned_names), _pruned_names)
+            _prune_drift = _drift_bounds_for_seed(_pruned, budget=budget)
+            if exclude_ships:
+                for s in exclude_ships:
+                    _prune_drift[s] = (0, 0)
+            _prune_ga = genetic_optimize(
+                seed_fleet=_pruned, enemy_fleet=enemy_fleet,
+                enemy_defenses=enemy_defenses, enemy_tech=enemy_tech,
+                attacker_tech=attacker_tech, budget=budget, mode=mode,
+                config=GAConfig(
+                    time_budget_seconds=min(ga_time_budget * 0.3, 2.0),
+                    sims_per_eval=100, population_size=30, mutation_rate=0.10,
+                    mutation_step_fraction=0.15, macro_mutation_rate=0.08,
+                    reallocate_rate=0.15,
+                ),
+                base_seed=base_seed + 31337,
+                drift_bounds=_prune_drift,
+                loss_scale=_loss_scale,
+                resource_weights=resource_weights,
+                preference_beta=preference_beta,
+                min_gain_pct=min_gain_pct,
+            )
+            # Budget-enforce the pruned result
+            _pfv = _fv(_prune_ga.best_fleet)
+            if _pfv > budget and _pfv > 0:
+                _scale = budget / _pfv
+                _prune_ga.best_fleet = {k: max(0, int(v * _scale)) for k, v in _prune_ga.best_fleet.items() if int(v * _scale) > 0}
+            _prune_val = simulate_batch(
+                attacker=_prune_ga.best_fleet, defender=enemy_fleet,
+                defender_defenses=enemy_defenses, attacker_tech=attacker_tech,
+                defender_tech=enemy_tech, n_sims=100, base_seed=base_seed + 7777,
+                debris_pct=debris_pct, deuterium_in_debris=deuterium_in_debris,
+            )
+            _prune_pen = resource_preference_penalty(_prune_ga.best_fleet, resource_weights, preference_beta)
+            _prune_eff_loss = float(_prune_val.get("mean_attacker_loss", float("inf"))) * _loss_scale + _prune_pen
+            if _prune_eff_loss < global_best_loss:
+                global_best_fleet = dict(_prune_ga.best_fleet)
+                global_best_loss = _prune_eff_loss
+                ga_result.best_fleet = global_best_fleet
+                _log.info("  Prune & refine: IMPROVED to %.0f (was %.0f)",
+                          global_best_loss, _prune_base_loss * _loss_scale + _prune_pen)
+            else:
+                _log.info("  Prune & refine: no improvement (kept original)")
+        else:
+            _log.info("  No dead-weight to prune")
+    else:
+        _log.info("  Skipped (fleet has <=2 ship types)")
+    _log.info("Phase C done in %.2fs", time.time() - _prune_t0)
 
     # Final validation
     _log.info("--- Final validation (%d sims) ---", final_sims)

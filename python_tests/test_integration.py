@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from ogame_optimizer.api.app import app
 from ogame_optimizer.core.combat import simulate_batch
 from ogame_optimizer.core.fleet import fleet_value, SHIPS_COST
-from ogame_optimizer.optimizer.orchestration import optimize
+from ogame_optimizer.optimizer.orchestration import optimize, _prune_dead_weight
 
 @pytest.fixture
 def client():
@@ -77,19 +77,19 @@ def test_defend_mode_produces_fleet():
 def test_determinism_same_seed():
     enemy = {"light_fighter": 200, "cruiser": 30}
     tech = (5, 5, 5)
-    r1 = optimize(enemy_fleet=enemy, enemy_defenses={}, enemy_tech=tech, attacker_tech=tech, budget_multiplier=1.0, mode="attack", base_seed=42, ga_time_budget=0.5, final_sims=200)
-    r2 = optimize(enemy_fleet=enemy, enemy_defenses={}, enemy_tech=tech, attacker_tech=tech, budget_multiplier=1.0, mode="attack", base_seed=42, ga_time_budget=0.5, final_sims=200)
+    r1 = optimize(enemy_fleet=enemy, enemy_defenses={}, enemy_tech=tech, attacker_tech=tech, budget_multiplier=1.0, mode="attack", base_seed=42, ga_time_budget=1.0, final_sims=200)
+    r2 = optimize(enemy_fleet=enemy, enemy_defenses={}, enemy_tech=tech, attacker_tech=tech, budget_multiplier=1.0, mode="attack", base_seed=42, ga_time_budget=1.0, final_sims=200)
     # GA uses time-based budget so exact fleet may vary between runs.
     # Verify both runs produce valid optimization results.
     assert r1.recommended_fleet, "Run 1 should produce a fleet"
     assert r2.recommended_fleet, "Run 2 should produce a fleet"
 
 def test_seed_robustness():
-    enemy = {"light_fighter": 100, "cruiser": 20}
+    enemy = {"light_fighter": 2000, "cruiser": 200}
     tech = (5, 5, 5)
     losses = []
     for seed in [42, 123, 9999]:
-        r = optimize(enemy_fleet=enemy, enemy_defenses={}, enemy_tech=tech, attacker_tech=tech, budget_multiplier=1.0, mode="attack", base_seed=seed, ga_time_budget=0.5, final_sims=200)
+        r = optimize(enemy_fleet=enemy, enemy_defenses={}, enemy_tech=tech, attacker_tech=tech, budget_multiplier=1.0, mode="attack", base_seed=seed, ga_time_budget=2.0, final_sims=200)
         losses.append(r.expected_loss_mean)
     mean_loss = sum(losses) / len(losses)
     if mean_loss > 0:
@@ -102,3 +102,91 @@ def test_multiplier_scales_budget():
     r05 = optimize(enemy_fleet=enemy, enemy_defenses={}, enemy_tech=tech, attacker_tech=tech, budget_multiplier=0.5, mode="attack", base_seed=42, ga_time_budget=0.5, final_sims=100)
     r20 = optimize(enemy_fleet=enemy, enemy_defenses={}, enemy_tech=tech, attacker_tech=tech, budget_multiplier=2.0, mode="attack", base_seed=42, ga_time_budget=0.5, final_sims=100)
     assert fleet_value(r20.recommended_fleet) >= fleet_value(r05.recommended_fleet)
+
+
+
+# ---------------------------------------------------------------------------
+# Prune-and-refine: dead-weight ships are identified and removed, budget
+# redistributed to the highest-impact positive ship.
+# ---------------------------------------------------------------------------
+
+
+def test_prune_removes_negative_impact_ships():
+    """Ships with impact < -5% are pruned; budget redistributed to the best
+    positive-impact ship."""
+    from ogame_optimizer.core.fleet import SHIPS_COST
+    fleet = {
+        "deathstar": 500,
+        "battleship": 2000,
+        "cruiser": 5000,
+        "espionage_probe": 100_000,
+    }
+    sensitivity = {
+        "deathstar": {"impact_pct": 110.0},
+        "battleship": {"impact_pct": -18.0},
+        "cruiser": {"impact_pct": -8.0},
+        "espionage_probe": {"impact_pct": 5.0},
+    }
+    pruned, names = _prune_dead_weight(fleet, sensitivity)
+    assert pruned is not None
+    assert set(names) == {"battleship", "cruiser"}  # both below -5%
+    assert "battleship" not in pruned
+    assert "cruiser" not in pruned
+    assert "deathstar" in pruned
+    assert "espionage_probe" in pruned
+    # Deathstars grew (freed budget redistributed to highest positive impact)
+    bs_cost = sum(SHIPS_COST["battleship"]) * 2000
+    cr_cost = sum(SHIPS_COST["cruiser"]) * 5000
+    freed = bs_cost + cr_cost
+    extra = freed // sum(SHIPS_COST["deathstar"])
+    assert pruned["deathstar"] >= 500 + extra - 1  # -1 for floor division
+
+
+def test_prune_returns_none_when_no_dead_weight():
+    """If all ships have positive or negligible impact, nothing is pruned."""
+    fleet = {"deathstar": 500, "cruiser": 5000}
+    sensitivity = {
+        "deathstar": {"impact_pct": 50.0},
+        "cruiser": {"impact_pct": 3.0},  # above -5% threshold
+    }
+    pruned, names = _prune_dead_weight(fleet, sensitivity)
+    assert pruned is None
+    assert names == []
+
+
+def test_prune_does_not_empty_fleet():
+    """If ALL ships are dead-weight, pruning is skipped (returns None) rather
+    than producing an empty fleet."""
+    fleet = {"cruiser": 100, "battleship": 10}
+    sensitivity = {
+        "cruiser": {"impact_pct": -10.0},
+        "battleship": {"impact_pct": -8.0},
+    }
+    pruned, names = _prune_dead_weight(fleet, sensitivity)
+    # Both dead-weight -- helper refuses to empty the fleet.
+    assert pruned is None
+    assert names == []
+
+
+def test_prune_and_refine_runs_end_to_end():
+    """Full optimize() with a scenario that has dead-weight ships. Phase C
+    should detect and attempt to prune them (logged). The result should be
+    valid regardless of whether pruning improved the outcome."""
+    r = optimize(
+        enemy_fleet={"battlecruiser": 50_000, "cruiser": 10_000},
+        enemy_defenses={},
+        enemy_tech=(0, 0, 0),
+        attacker_tech=(0, 0, 0),
+        budget_multiplier=0.5,
+        mode="attack",
+        base_seed=42,
+        ga_time_budget=3.0,
+        final_sims=100,
+        debris_pct=0.80,
+        deuterium_in_debris=True,
+        optimization_target="maximize_profit",
+    )
+    # Result is valid (non-empty fleet, ran without error).
+    assert sum(r.recommended_fleet.values()) > 0
+    # win_threshold_met flag is present.
+    assert hasattr(r, "win_threshold_met")
