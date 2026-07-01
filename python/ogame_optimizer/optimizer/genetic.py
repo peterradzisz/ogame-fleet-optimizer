@@ -15,12 +15,28 @@ from ogame_optimizer.optimizer.objective import ObjectiveMode
 @dataclass
 class GAConfig:
     population_size: int = 50
-    mutation_rate: float = 0.1
+    mutation_rate: float = 0.15
     crossover_rate: float = 0.7
     elitism_count: int = 2
     tournament_size: int = 3
     time_budget_seconds: float = 5.0
     sims_per_eval: int = 100
+    # --- High-variance exploration knobs ---
+    # sigma for Gaussian creep = mutation_step_fraction * (drift hi - lo).
+    # Old code used a fixed 10%-of-count nudge; scaling to the drift range
+    # makes each step actually explore the searchable space.
+    mutation_step_fraction: float = 0.25
+    # Probability that a mutated gene takes a BIG uniform jump anywhere in
+    # [lo, hi] instead of a Gaussian creep step. The "creep + jump" pattern:
+    # lets the GA escape local optima and test radically different counts
+    # fast (high variance, as requested).
+    macro_mutation_rate: float = 0.15
+    # Probability per offspring of a budget-neutral reallocation: move cost
+    # from one ship type to another. This is the only operator that
+    # explores cost-share COMPOSITION; independent count-jitter cannot
+    # rebalance a fleet (e.g. it can never turn a 76% LF fleet into a 30%
+    # LF fleet, because drift bounds + per-type jitter lock the ratio).
+    reallocate_rate: float = 0.25
 
 
 @dataclass
@@ -41,21 +57,63 @@ def _fleet_cost(fleet: Dict[str, int]) -> int:
     return fleet_value(fleet)
 
 
-def _drift_bounds_for_seed(seed_fleet: Dict[str, int], total_fleet_count: int) -> Dict[str, Tuple[int, int]]:
-    """Per-ship-type drift bounds: [floor(seed*0.7), ceil(seed*1.3)].
-    Zero-baseline types get [0, small_cap] where small_cap = max(1, 5% of total)."""
-    bounds = {}
-    total = max(1, total_fleet_count)
-    small_cap = max(1, int(0.05 * total))
+def _drift_bounds_for_seed(
+    seed_fleet: Dict[str, int],
+    total_fleet_count: int = None,
+    budget: int = None,
+) -> Dict[str, Tuple[int, int]]:
+    """Per-ship-type bounds on the searchable count range.
+
+    Two regimes:
+
+    * **Cost-share-aware (preferred — pass ``budget``):** bounds are derived
+      from each ship's share of the BUDGET, not its raw count. This matters
+      when fleet counts are skewed (e.g. 1,000 Destroyers + 100,000 Light
+      Fighters): the old count-based +/-30%% bounds locked the cost
+      composition near the seed (LF share could only move 53%%..99%%), so the
+      GA could never test a meaningfully different ratio. Cost-share bounds
+      let any ship grow from 0 up to a large fraction of the budget and
+      shrink all the way to 0, so composition is fully explorable.
+
+      Seeded ship:   lo = 0 (can be eliminated -> lets GA find dead weight),
+                     hi = max(seed_share*2.5, seed_share + 0.25, 0.20) of budget.
+      Unseeded ship: lo = 0, hi = 0.30 of budget (can be promoted into relevance).
+
+    * **Count-based (legacy fallback when no budget):** [seed*0.7, seed*1.3]
+      with unseeded types capped at 5%% of total count. Kept for back-compat.
+    """
     all_ships = _ship_list()
+    if budget is None or budget <= 0:
+        total = max(1, total_fleet_count or sum(seed_fleet.values()))
+        small_cap = max(1, int(0.05 * total))
+        bounds = {}
+        for ship in all_ships:
+            seed_count = seed_fleet.get(ship, 0)
+            if seed_count > 0:
+                lo = int(seed_count * 0.7)
+                hi = max(lo, int(seed_count * 1.3) + 1)
+                bounds[ship] = (lo, hi)
+            else:
+                bounds[ship] = (0, small_cap)
+        return bounds
+
+    UNSEED_PROMOTE_SHARE = 0.30
+    bounds = {}
     for ship in all_ships:
+        unit_cost = sum(SHIPS_COST.get(ship, (0, 0, 0)))
         seed_count = seed_fleet.get(ship, 0)
+        if unit_cost <= 0:
+            bounds[ship] = (0, max(0, seed_count))
+            continue
         if seed_count > 0:
-            lo = int(seed_count * 0.7)
-            hi = max(lo, int(seed_count * 1.3) + 1)  # +1 to ensure hi >= lo
-            bounds[ship] = (lo, hi)
+            seed_share = (unit_cost * seed_count) / budget
+            hi_share = max(seed_share * 2.5, seed_share + 0.25, 0.20)
         else:
-            bounds[ship] = (0, small_cap)
+            hi_share = UNSEED_PROMOTE_SHARE
+        hi_count = max(1, int(hi_share * budget / unit_cost))
+        if seed_count > 0:
+            hi_count = max(hi_count, seed_count)  # seed itself must be feasible
+        bounds[ship] = (0, hi_count)
     return bounds
 
 
@@ -85,11 +143,20 @@ def _random_chromosome(drift_bounds: Dict[str, Tuple[int, int]], budget: int, rn
 
 
 def _renormalize_to_budget(chrom: List[int], budget: int, rng: random.Random) -> List[int]:
-    """If over budget, scale ALL ships down proportionally. Maintains composition."""
+    """Scale the chromosome DOWN to budget if over.
+
+    Downscale-only by design: cost-share drift bounds set lo=0 for every ship,
+    so scaling down (reducing counts) can never push a gene below its lo, and a
+    gene already clipped to [0, hi] by mutation stays within [0, hi]. Upscaling
+    was tried and rejected — it pushed genes past their hi, breaking the bound
+    invariant. Under-budget fleets simply lose on fitness (less combat power)
+    and are selected out; the budget-neutral reallocate operator and crossover
+    keep the population well-filled in practice.
+    """
     current = _fleet_cost(_chromosome_to_fleet(chrom))
     if current > budget and current > 0:
         scale = budget / current
-        chrom = [max(0, int(c * scale)) for c in chrom]
+        return [max(0, int(c * scale)) for c in chrom]
     return chrom
 
 
@@ -115,21 +182,109 @@ def _uniform_crossover(p1: List[int], p2: List[int], crossover_rate: float, rng:
     return c1, c2
 
 
-def _gaussian_mutate(chrom: List[int], mutation_rate: float, drift_bounds: Dict[str, Tuple[int, int]], budget: int, rng: random.Random) -> List[int]:
-    """Gaussian mutation: for each gene, with probability mutation_rate, add Gaussian noise, then clip + round."""
+def _gaussian_mutate(
+    chrom: List[int],
+    mutation_rate: float,
+    drift_bounds: Dict[str, Tuple[int, int]],
+    budget: int,
+    rng: random.Random,
+    macro_mutation_rate: float = 0.15,
+    step_fraction: float = 0.25,
+) -> List[int]:
+    """Creep + jump mutation.
+
+    For each gene, with probability ``mutation_rate``:
+    * with prob ``macro_mutation_rate``: BIG uniform jump anywhere in [lo, hi]
+      (high-variance move to escape local optima and test different counts fast);
+    * otherwise: Gaussian creep with sigma = ``step_fraction`` * (hi - lo), so a
+      1-sigma step covers ~``step_fraction`` of the explorable range. Replaces
+      the old fixed 10%-of-count nudge that barely moved large-count genes.
+    """
     ships = _ship_list()
     out = list(chrom)
     for i, c in enumerate(chrom):
-        if rng.random() < mutation_rate:
-            noise_std = max(1, int(c * 0.1))
-            new_val = c + int(rng.gauss(0, noise_std))
-            new_val = max(0, new_val)  # no negative
-            # Clip to drift bounds (skip ships without bounds set)
-            if ships[i] in drift_bounds:
-                lo, hi = drift_bounds[ships[i]]
-                new_val = max(lo, min(hi, new_val))
-            out[i] = new_val
+        if rng.random() >= mutation_rate:
+            continue
+        ship = ships[i]
+        if ship not in drift_bounds:
+            continue
+        lo, hi = drift_bounds[ship]
+        if hi <= lo:
+            out[i] = lo
+            continue
+        if rng.random() < macro_mutation_rate:
+            new_val = rng.randint(lo, hi)
+        else:
+            sigma = max(1.0, (hi - lo) * step_fraction)
+            new_val = int(round(c + rng.gauss(0, sigma)))
+            new_val = max(lo, min(hi, new_val))
+        out[i] = new_val
     return _renormalize_to_budget(out, budget, rng)
+
+
+def _reallocate_mutate(
+    chrom: List[int],
+    drift_bounds: Dict[str, Tuple[int, int]],
+    budget: int,
+    rng: random.Random,
+) -> List[int]:
+    """Budget-neutral composition shift: move cost from one ship type to another.
+
+    This is the operator that actually explores cost-share COMPOSITION, which
+    independent per-type count jitter cannot do. To discover that the optimal
+    fleet reallocates spend from ship A to ship B (e.g. turn a 76%%-LF fleet
+    into a 30%%-LF fleet), you need a *coordinated* move — count-based +/-N%%
+    mutation only jitters each type independently and drift bounds cap each at
+    a narrow range, so the ratio is locked.
+
+    Picks a source ship (with room above its lo) and a distinct target (with
+    headroom below its hi), moves a random 15-60%% of the affordable cost from
+    source to target, clipped to both bounds. Total cost is ~unchanged by
+    construction, so no renormalization is needed.
+    """
+    ships = _ship_list()
+    sources = []
+    for i, ship in enumerate(ships):
+        if ship not in drift_bounds:
+            continue
+        cost = sum(SHIPS_COST.get(ship, (0, 0, 0)))
+        if cost <= 0:
+            continue
+        lo, hi = drift_bounds[ship]
+        if chrom[i] > lo:  # room to give
+            sources.append((i, cost, lo, hi))
+    if not sources:
+        return chrom
+    src_i, src_cost, src_lo, src_hi = rng.choice(sources)
+
+    targets = []
+    for i, ship in enumerate(ships):
+        if i == src_i or ship not in drift_bounds:
+            continue
+        cost = sum(SHIPS_COST.get(ship, (0, 0, 0)))
+        if cost <= 0:
+            continue
+        lo, hi = drift_bounds[ship]
+        if chrom[i] < hi:  # room to grow
+            targets.append((i, cost, lo, hi))
+    if not targets:
+        return chrom
+    tgt_i, tgt_cost, tgt_lo, tgt_hi = rng.choice(targets)
+
+    give_room = (chrom[src_i] - src_lo) * src_cost
+    take_room = (tgt_hi - chrom[tgt_i]) * tgt_cost
+    max_move = max(0, min(give_room, take_room))
+    if max_move <= 0:
+        return chrom
+    move_cost = int(rng.uniform(0.15, 0.60) * max_move)
+    drop_units = move_cost // src_cost
+    add_units = move_cost // tgt_cost
+    if drop_units <= 0 or add_units <= 0:
+        return chrom
+    out = list(chrom)
+    out[src_i] = max(src_lo, out[src_i] - drop_units)
+    out[tgt_i] = min(tgt_hi, out[tgt_i] + add_units)
+    return out
 
 
 def _evaluate_population_with_crn(
@@ -209,8 +364,7 @@ def genetic_optimize(
         config = GAConfig()
 
     if drift_bounds is None:
-        total = sum(seed_fleet.values())
-        drift_bounds = _drift_bounds_for_seed(seed_fleet, total)
+        drift_bounds = _drift_bounds_for_seed(seed_fleet, budget=budget)
 
     t0 = time.time()
     rng = random.Random(base_seed)
@@ -264,8 +418,22 @@ def genetic_optimize(
             p1 = _tournament_select(pop_with_fit, config.tournament_size, rng)
             p2 = _tournament_select(pop_with_fit, config.tournament_size, rng)
             c1, c2 = _uniform_crossover(p1, p2, config.crossover_rate, rng)
-            c1 = _gaussian_mutate(c1, config.mutation_rate, drift_bounds, budget, rng)
-            c2 = _gaussian_mutate(c2, config.mutation_rate, drift_bounds, budget, rng)
+            c1 = _gaussian_mutate(
+                c1, config.mutation_rate, drift_bounds, budget, rng,
+                macro_mutation_rate=config.macro_mutation_rate,
+                step_fraction=config.mutation_step_fraction,
+            )
+            c2 = _gaussian_mutate(
+                c2, config.mutation_rate, drift_bounds, budget, rng,
+                macro_mutation_rate=config.macro_mutation_rate,
+                step_fraction=config.mutation_step_fraction,
+            )
+            # Budget-neutral composition shift — explores cost-share ratios
+            # that independent count-jitter cannot reach.
+            if rng.random() < config.reallocate_rate:
+                c1 = _reallocate_mutate(c1, drift_bounds, budget, rng)
+            if rng.random() < config.reallocate_rate:
+                c2 = _reallocate_mutate(c2, drift_bounds, budget, rng)
             new_pop.append(c1)
             if len(new_pop) < config.population_size:
                 new_pop.append(c2)

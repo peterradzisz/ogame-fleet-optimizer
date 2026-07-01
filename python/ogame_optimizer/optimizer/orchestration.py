@@ -408,7 +408,7 @@ def optimize(
     for seed_name, seed_fleet in seeds.items():
         if explore_time < 0.5:
             continue
-        seed_drift = _drift_bounds_for_seed(seed_fleet, total_fleet_count=sum(seed_fleet.values()))
+        seed_drift = _drift_bounds_for_seed(seed_fleet, budget=budget)
         if exclude_ships:
             for s in exclude_ships:
                 seed_drift[s] = (0, 0)
@@ -422,7 +422,11 @@ def optimize(
             attacker_tech=attacker_tech,
             budget=budget,
             mode=mode,
-            config=GAConfig(time_budget_seconds=explore_time, sims_per_eval=10, population_size=20, mutation_rate=0.20),
+            config=GAConfig(
+                time_budget_seconds=explore_time, sims_per_eval=20, population_size=20,
+                mutation_rate=0.30, mutation_step_fraction=0.30, macro_mutation_rate=0.20,
+                reallocate_rate=0.30,
+            ),
             base_seed=base_seed + abs(hash(seed_name)) % 9999,
             drift_bounds=seed_drift,
             loss_scale=_loss_scale,
@@ -452,20 +456,25 @@ def optimize(
             _log.info("  Start '%s': %.0f (no improvement)", seed_name, validated_loss)
 
     # Phase B2: Refine the best seed with increasing fidelity
-    best_drift = _drift_bounds_for_seed(global_best_fleet, total_fleet_count=sum(global_best_fleet.values()))
+    best_drift = _drift_bounds_for_seed(global_best_fleet, budget=budget)
     if exclude_ships:
         for s in exclude_ships:
             best_drift[s] = (0, 0)
 
     refine_time = ga_time_budget - explore_time * len(seeds)
+    # Annealed high-variance schedule: refine still explores composition
+    # (moderate steps + reallocation), polish converges with small steps.
+    # (name, time_frac, sims/eval, mut_rate, step_frac, macro_rate, realloc_rate)
     rounds = [
-        ("refine", refine_time * 0.50, 50, 0.10),
-        ("polish", refine_time * 0.50, 100, 0.05),
+        ("refine", 0.50, 50,  0.15, 0.18, 0.12, 0.20),
+        ("polish", 0.50, 100, 0.08, 0.10, 0.05, 0.10),
     ]
-    for rname, t_alloc, sims_eval, mut_rate in rounds:
+    for rname, t_frac, sims_eval, mut_rate, step_frac, macro_rate, realloc_rate in rounds:
+        t_alloc = refine_time * t_frac
         if t_alloc < 0.5:
             continue
-        _log.info("  Round '%s': %.1fs, %d sims/eval", rname, t_alloc, sims_eval)
+        _log.info("  Round '%s': %.1fs, %d sims/eval, mut=%.2f step=%.2f macro=%.2f realloc=%.2f",
+                  rname, t_alloc, sims_eval, mut_rate, step_frac, macro_rate, realloc_rate)
         ga_round = genetic_optimize(
             seed_fleet=global_best_fleet,
             enemy_fleet=enemy_fleet,
@@ -474,7 +483,11 @@ def optimize(
             attacker_tech=attacker_tech,
             budget=budget,
             mode=mode,
-            config=GAConfig(time_budget_seconds=t_alloc, sims_per_eval=sims_eval, population_size=30, mutation_rate=mut_rate),
+            config=GAConfig(
+                time_budget_seconds=t_alloc, sims_per_eval=sims_eval, population_size=30,
+                mutation_rate=mut_rate, mutation_step_fraction=step_frac,
+                macro_mutation_rate=macro_rate, reallocate_rate=realloc_rate,
+            ),
             base_seed=base_seed + abs(hash(rname)) % 9999,
             drift_bounds=best_drift,
             loss_scale=_loss_scale,

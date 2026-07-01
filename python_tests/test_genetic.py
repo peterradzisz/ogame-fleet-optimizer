@@ -4,13 +4,14 @@ import time
 import pytest
 from ogame_optimizer.optimizer.genetic import (
     genetic_optimize, GAConfig, _drift_bounds_for_seed,
-    _chromosome_to_fleet, _random_chromosome, _uniform_crossover, _gaussian_mutate
+    _chromosome_to_fleet, _random_chromosome, _uniform_crossover, _gaussian_mutate,
+    _reallocate_mutate,
 )
-from ogame_optimizer.core.fleet import SHIPS_COST
+from ogame_optimizer.core.fleet import SHIPS_COST, fleet_value
 
 
 def test_drift_bounds():
-    """All individuals have ship counts in [floor(seed*0.7), ceil(seed*1.3)]."""
+    """Best fleet's counts stay within the (wide, cost-share-aware) drift bounds."""
     seed_fleet = {"cruiser": 100, "battleship": 20}
     enemy = {"light_fighter": 1000}
     budget = 2_000_000
@@ -20,15 +21,10 @@ def test_drift_bounds():
         enemy_tech=(0,0,0), attacker_tech=(0,0,0),
         budget=budget, mode="attack", config=config, base_seed=42,
     )
-    # The best_fleet might not be in drift bounds (elitism could be empty fleet),
-    # but we check that *some* evolution produced a valid fleet in bounds.
-    # The best fleet is whatever the last elite was, which is always in bounds.
+    bounds = _drift_bounds_for_seed(seed_fleet, budget=budget)
     for ship, count in r.best_fleet.items():
-        seed_count = seed_fleet.get(ship, 0)
-        if seed_count > 0:
-            lo = int(seed_count * 0.7)
-            hi = int(seed_count * 1.3) + 1
-            assert lo <= count <= hi, f"{ship} count {count} not in [{lo}, {hi}]"
+        lo, hi = bounds.get(ship, (0, count))
+        assert lo <= count <= hi, f"{ship} count {count} not in [{lo}, {hi}]"
 
 
 def test_improves_over_seed():
@@ -106,3 +102,112 @@ def test_mutation_rounds_to_int():
     new_chrom = _gaussian_mutate(chrom, mutation_rate=1.0, drift_bounds={"cruiser": (0, 200)}, budget=1_000_000, rng=rng)
     for g in new_chrom:
         assert isinstance(g, int), f"Mutation produced non-int: {g}"
+
+
+
+# ---------------------------------------------------------------------------
+# High-variance exploration: cost-share drift bounds, macro jumps, and the
+# budget-neutral reallocation operator (the only way to explore composition).
+# ---------------------------------------------------------------------------
+
+
+def test_drift_bounds_cost_share_allow_elimination_and_promotion():
+    """With a budget, a seeded ship can be eliminated (lo=0) and grown wide;
+    an UNSEEDED ship can be promoted up to ~30% of the budget (not 5% of
+    count). This is what unblocks composition exploration."""
+    seed = {"destroyer": 1000, "light_fighter": 100_000}
+    budget = fleet_value(seed)
+    b = _drift_bounds_for_seed(seed, budget=budget)
+    for s in ("destroyer", "light_fighter"):
+        lo, hi = b[s]
+        assert lo == 0, f"{s} lo should be 0 (allow elimination), got {lo}"
+        assert hi > seed[s], f"{s} hi {hi} should exceed seed {seed[s]}"
+    cruiser_cost = sum(SHIPS_COST["cruiser"])
+    _, cruiser_hi = b["cruiser"]
+    share = (cruiser_hi * cruiser_cost) / budget
+    assert share >= 0.25, f"unseeded cruiser should reach >=25% of budget, got {share:.1%}"
+
+
+def test_drift_bounds_legacy_fallback_without_budget():
+    """Without a budget, the old count-based [seed*0.7, seed*1.3] bounds
+    are used (back-compat for callers that don't pass budget)."""
+    b = _drift_bounds_for_seed({"cruiser": 100}, total_fleet_count=100)
+    lo, hi = b["cruiser"]
+    assert lo == 70 and hi == 131
+
+
+def test_reallocate_is_budget_neutral():
+    """Reallocation keeps total fleet cost ~constant (integer rounding only)
+    and respects drift bounds."""
+    import random
+    rng = random.Random(0)
+    seed = {"destroyer": 1000, "light_fighter": 100_000, "cruiser": 5_000}
+    budget = fleet_value(seed)
+    bounds = _drift_bounds_for_seed(seed, budget=budget)
+    ships = list(SHIPS_COST.keys())
+    chrom = [seed.get(s, 0) for s in ships]
+    before = fleet_value(_chromosome_to_fleet(chrom))
+    max_delta = 0
+    for _ in range(500):
+        out = _reallocate_mutate(chrom, bounds, budget, rng)
+        after = fleet_value(_chromosome_to_fleet(out))
+        max_delta = max(max_delta, abs(after - before))
+        for i, s in enumerate(ships):
+            lo, hi = bounds[s]
+            assert lo <= out[i] <= hi, f"{s} {out[i]} outside [{lo},{hi}]"
+    assert max_delta < 0.03 * budget, f"reallocate not budget-neutral: {max_delta}"
+
+
+def test_reallocate_can_shift_composition():
+    """Repeated reallocation can move cost-share meaningfully — the whole
+    point: explore composition that count-jitter cannot reach."""
+    import random
+    rng = random.Random(7)
+    seed = {"destroyer": 1000, "light_fighter": 100_000}
+    budget = fleet_value(seed)
+    bounds = _drift_bounds_for_seed(seed, budget=budget)
+    ships = list(SHIPS_COST.keys())
+    chrom = [seed.get(s, 0) for s in ships]
+    d_cost = sum(SHIPS_COST["destroyer"])
+    share_before = (chrom[ships.index("destroyer")] * d_cost) / budget
+    for _ in range(200):
+        chrom = _reallocate_mutate(chrom, bounds, budget, rng)
+    share_after = (chrom[ships.index("destroyer")] * d_cost) / budget
+    assert abs(share_after - share_before) > 0.05, (
+        f"composition did not shift: {share_before:.1%} -> {share_after:.1%}"
+    )
+
+
+def test_macro_mutation_can_jump_far():
+    """With macro_mutation_rate=1.0, a mutated gene can reach near the top
+    of its range in one step (high-variance jump), not just creep."""
+    import random
+    rng = random.Random(0)
+    ships = list(SHIPS_COST.keys())
+    cr_idx = ships.index("cruiser")
+    bounds = {"cruiser": (0, 200)}
+    chrom = [0] * len(ships)
+    max_seen = 0
+    for _ in range(200):
+        out = _gaussian_mutate(list(chrom), mutation_rate=1.0, drift_bounds=bounds,
+                               budget=10_000_000, rng=rng,
+                               macro_mutation_rate=1.0, step_fraction=0.25)
+        max_seen = max(max_seen, out[cr_idx])
+    assert max_seen >= 150, f"macro jump never reached far end of range: max={max_seen}"
+
+
+def test_gaussian_mutation_respects_bounds():
+    """Mutated genes always land within [lo, hi] for every ship."""
+    import random
+    rng = random.Random(0)
+    seed = {"cruiser": 100, "light_fighter": 1000}
+    budget = 5_000_000
+    bounds = _drift_bounds_for_seed(seed, budget=budget)
+    ships = list(SHIPS_COST.keys())
+    chrom = [seed.get(s, 0) for s in ships]
+    for _ in range(300):
+        out = _gaussian_mutate(list(chrom), mutation_rate=1.0, drift_bounds=bounds,
+                               budget=budget, rng=rng)
+        for i, s in enumerate(ships):
+            lo, hi = bounds[s]
+            assert lo <= out[i] <= hi, f"{s} {out[i]} outside [{lo},{hi}]"
