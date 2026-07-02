@@ -126,10 +126,20 @@
         preference_beta: parseFloat((document.getElementById('preference_beta')||{value:'0.05'}).value || '0.05'),
       };
 
-      console.log("POST /api/optimize payload:", payload);
+      // Check: 0.0x requires base fleet
+      if (payload.budget_multiplier === 0 && activeTab !== 'myfleet') {
+        throw new Error('0.0X requires "Start from My Fleet" tab. Switch tabs and enter your fleet.');
+      }
+      var myFleetCheck = readMyFleet();
+      if (payload.budget_multiplier === 0 && activeTab === 'myfleet' && Object.keys(myFleetCheck).length === 0) {
+        throw new Error('0.0X requires ships in the My Fleet section. Enter your fleet first.');
+      }
+      console.log('POST /api/optimize payload:', payload);
       console.log("DIAG activeTab:", activeTab);
       console.log("DIAG base_fleet in payload:", payload.base_fleet);
-      console.log("DIAG base_fleet ships:", payload.base_fleet ? Object.keys(payload.base_fleet).length : 0);
+      console.log('DIAG base_fleet ships:', payload.base_fleet ? Object.keys(payload.base_fleet).length : 0);
+      var dbg2 = document.getElementById('debug-badge');
+      if (dbg2) dbg2.textContent = 'TAB: ' + activeTab + ' | base_fleet: ' + (payload.base_fleet ? Object.keys(payload.base_fleet).length + ' ships WILL be sent' : 'NOT SET');
       lastRequest = payload;
       var resp = await fetch("/api/optimize", {
         method: "POST",
@@ -528,6 +538,9 @@ if (parseBtn) {
   var multSelect = document.querySelector('select[name="budget_multiplier"]');
   function switchTab(tabName) {
     activeTab = tabName;
+    console.log('DIAG switchTab called:', tabName);
+    var dbg = document.getElementById('debug-badge');
+    if (dbg) dbg.textContent = 'TAB: ' + tabName + ' | base_fleet: ' + (activeTab === 'myfleet' ? 'will be sent' : 'not set');
     tabBtns.forEach(function(b) { b.classList.toggle("active", b.dataset.tab === tabName); });
     if (myFleetSection) myFleetSection.classList.toggle("hidden", tabName !== "myfleet");
     if (budgetHintCounter) budgetHintCounter.classList.toggle("hidden", tabName === "myfleet");
@@ -812,6 +825,7 @@ if (parseBtn) {
   window.copyDefenderTable = copyDefenderTable;
   window.copyFleetOGame = copyFleetOGame;
   window.copyDefenderOGame = copyDefenderOGame;
+  window.switchTab = switchTab;
 
   // ============================================================
   // Fleet Presets: localStorage save/load + TXT/XML export/import

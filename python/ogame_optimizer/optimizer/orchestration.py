@@ -384,8 +384,13 @@ def optimize(
               optimization_target, _loss_scale, debris_pct * 100, min_gain_pct)
     _log.info("Resource weights: M=%.2f C=%.2f D=%.2f (composition penalty, beta=%.2f)",
               resource_weights[0], resource_weights[1], resource_weights[2], preference_beta)
-    if base_fleet and budget == 0:
-        _log.info('0.0x SIMULATION: budget=0 with base_fleet - pure evaluation mode')
+    if budget_multiplier == 0 and base_fleet:
+        _log.info('0.0x SIMULATION: multiplier=0 with base_fleet - pure evaluation mode')
+    elif budget_multiplier == 0 and not base_fleet:
+        raise ValueError(
+            "0.0X multiplier requires a base fleet. Switch to the "
+            "Start from My Fleet tab and enter your ships first."
+        )
     else:
         _validate_inputs(enemy_fleet, enemy_defenses, budget)
 

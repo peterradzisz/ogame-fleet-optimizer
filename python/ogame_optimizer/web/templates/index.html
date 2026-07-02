@@ -2,9 +2,10 @@
 {% block title %}OGame Fleet Optimizer{% endblock %}
 {% block content %}
   <div class="tab-switcher" id="mode-tabs">
-    <button type="button" class="tab-btn active" data-tab="counter">Find Perfect Counter</button>
-    <button type="button" class="tab-btn" data-tab="myfleet">Start from My Fleet</button>
+    <button type="button" class="tab-btn active" data-tab="counter" onclick="window.switchTab('counter')">Find Perfect Counter</button>
+    <button type="button" class="tab-btn" data-tab="myfleet" onclick="window.switchTab('myfleet')">Start from My Fleet</button>
   </div>
+  <div id="debug-badge" style="font-size:11px;color:#fbbf24;padding:2px 8px;background:#1a1a2e;border-radius:4px;display:inline-block;margin-bottom:4px">TAB: counter | base_fleet: not set</div>
 
   <fieldset id="my-fleet-section" class="hidden">
     <legend>My Fleet (your existing ships — locked, always fielded)</legend>
@@ -306,5 +307,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/app.js?v=20260702e"></script>
+<script src="/static/app.js?v=20260702f"></script>
 {% endblock %}
