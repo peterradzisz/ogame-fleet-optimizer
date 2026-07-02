@@ -262,9 +262,9 @@ def validate_multiplier(multiplier: float) -> None:
         raise ValueError(
             f"multiplier must be a number, got {type(multiplier).__name__}"
         )
-    if multiplier <= 0:
+    if multiplier < 0:
         raise ValueError(
-            f"multiplier must be positive, got {multiplier}"
+            f"multiplier must be non-negative, got {multiplier}"
         )
     tenth = float(multiplier) * 10.0
     if not math.isclose(tenth, round(tenth), abs_tol=_GRID_TOLERANCE):

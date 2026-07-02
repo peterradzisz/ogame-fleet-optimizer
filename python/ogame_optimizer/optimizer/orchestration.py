@@ -384,7 +384,10 @@ def optimize(
               optimization_target, _loss_scale, debris_pct * 100, min_gain_pct)
     _log.info("Resource weights: M=%.2f C=%.2f D=%.2f (composition penalty, beta=%.2f)",
               resource_weights[0], resource_weights[1], resource_weights[2], preference_beta)
-    _validate_inputs(enemy_fleet, enemy_defenses, budget)
+    if base_fleet and budget == 0:
+        _log.info('0.0x SIMULATION: budget=0 with base_fleet - pure evaluation mode')
+    else:
+        _validate_inputs(enemy_fleet, enemy_defenses, budget)
 
     # --- base_fleet mode: the player has an existing fleet (locked, always
     # fielded) and wants to know what to BUILD on top of it. The GA
@@ -406,7 +409,11 @@ def optimize(
                   _ga_budget, base_count, base_cost)
 
     # Phase A: greedy (or use provided seed_fleet for refinement)
-    if seed_fleet:
+    if base_fleet and _ga_budget == 0:
+        _log.info('--- Phase A: SKIPPED (0.0x simulation, no additions budget) ---')
+        from ogame_optimizer.optimizer.greedy import GreedyResult
+        greedy_result = GreedyResult(fleet={}, estimated_loss=0.0, time_elapsed=0.0)
+    elif seed_fleet:
         _log.info("--- Phase A: Using provided seed_fleet (refinement) ---")
         from ogame_optimizer.optimizer.greedy import GreedyResult
         greedy_result = GreedyResult(fleet=dict(seed_fleet), estimated_loss=0.0, time_elapsed=0.0)
@@ -631,7 +638,7 @@ def optimize(
     _log.info("Phase B done in %.2fs: best_loss=%.0f", t2 - t1, global_best_loss)
 
     # Strict budget enforcement: proportional scale if over.
-    # In base_fleet mode, ONLY the additions are scaled — the base fleet is a
+    # In base_fleet mode, ONLY the additions are scaled - the base fleet is a
     # sunk cost (player already built it) and must be preserved as-is.
     from ogame_optimizer.core.fleet import fleet_value as _fv
     if base_fleet:

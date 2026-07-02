@@ -184,9 +184,14 @@ def test_negative_multiplier_rejected() -> None:
         validate_multiplier(-1.0)
 
 
-def test_zero_multiplier_rejected() -> None:
+def test_negative_multiplier_rejected() -> None:
     with pytest.raises(ValueError):
-        validate_multiplier(0.0)
+        validate_multiplier(-0.1)
+
+
+def test_zero_multiplier_allowed() -> None:
+    # 0.0 is valid (pure simulation mode with base_fleet)
+    validate_multiplier(0.0)
 
 
 def test_multiplier_grid_handles_float_precision() -> None:

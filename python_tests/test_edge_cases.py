@@ -106,7 +106,7 @@ def test_zero_budget_returns_error():
 
     """Budget = 0 returns clear ValueError."""
 
-    with pytest.raises(ValueError, match="multiplier must be positive"):
+    with pytest.raises(ValueError, match="[Bb]udget must be positive"):
 
         optimize(enemy_fleet={"light_fighter": 100}, enemy_defenses={}, enemy_tech=(0, 0, 0), attacker_tech=(0, 0, 0), budget_multiplier=0, mode="attack", base_seed=42)
 

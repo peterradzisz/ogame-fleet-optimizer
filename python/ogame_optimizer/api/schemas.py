@@ -84,9 +84,10 @@ class OptimizeRequest(BaseModel):
     @field_validator("budget_multiplier")
     @classmethod
     def validate_multiplier(cls, v: float) -> float:
-        if v <= 0:
-            raise ValueError("budget_multiplier must be positive")
-        if abs(v / 0.1 - round(v / 0.1)) > 1e-6:
+        # Allow 0 only for base_fleet mode (pure simulation)
+        if v < 0:
+            raise ValueError("budget_multiplier must be non-negative")
+        if v > 0 and abs(v / 0.1 - round(v / 0.1)) > 1e-6:
             raise ValueError(f"budget_multiplier must be a 0.1-step value (0.1, 0.2, ..., 1.0, 1.5, ...), got {v}")
         return v
 
