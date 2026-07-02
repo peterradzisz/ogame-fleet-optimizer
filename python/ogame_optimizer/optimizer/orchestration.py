@@ -463,7 +463,10 @@ def optimize(
             _debris_total = int(_base_check.get("debris_total", 0))
             _net_profit = _debris_total - _base_raw_loss
 
-            # Compute sensitivity analysis for the base fleet (shows impact tags)
+            # Compute sensitivity analysis for the base fleet.
+            # Skip base ships from impact tags - they are locked and can't be
+            # removed, so showing 'dead_weight' for them is misleading.
+            # Only ships with additions (count > base count) would be analyzed.
             _base_sens = _sensitivity_analysis(
                 fleet=dict(base_fleet), enemy_fleet=enemy_fleet,
                 enemy_defenses=enemy_defenses, attacker_tech=attacker_tech,
@@ -472,6 +475,7 @@ def optimize(
                 base_seed=base_seed, n_sims=200,
                 loss_scale=_loss_scale, resource_weights=resource_weights,
                 preference_beta=preference_beta,
+                skip_ships=set(base_fleet.keys()),
             )
 
             # Compute defender analysis (per-ship survival)
