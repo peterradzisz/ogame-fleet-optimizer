@@ -682,11 +682,22 @@ def optimize(
         _pruned, _pruned_names = _prune_dead_weight(ga_result.best_fleet, _prune_sens)
         if _pruned and sum(_pruned.values()) > 0:
             _log.info("  Pruning %d dead-weight ships: %s", len(_pruned_names), _pruned_names)
-            # Budget-enforce the pruned fleet
-            _pfv = _fv(_pruned)
-            if _pfv > budget and _pfv > 0:
-                _scale = budget / _pfv
-                _pruned = {k: max(0, int(v * _scale)) for k, v in _pruned.items() if int(v * _scale) > 0}
+            # Budget-enforce the pruned fleet.
+            # In base_fleet mode, ONLY additions are scaled (base is sunk cost).
+            if base_fleet:
+                _pruned_add = {s: max(0, _pruned.get(s, 0) - base_fleet.get(s, 0))
+                               for s in _pruned}
+                _pa_cost = _fv(_pruned_add)
+                if _pa_cost > _ga_budget and _pa_cost > 0:
+                    _log.warning("  Pruned additions over budget: %d > %d, scaling", _pa_cost, _ga_budget)
+                    _scale = _ga_budget / _pa_cost
+                    _pruned_add = {k: max(0, int(v * _scale)) for k, v in _pruned_add.items() if int(v * _scale) > 0}
+                    _pruned = _merge_fleet(base_fleet, _pruned_add)
+            else:
+                _pfv = _fv(_pruned)
+                if _pfv > budget and _pfv > 0:
+                    _scale = budget / _pfv
+                    _pruned = {k: max(0, int(v * _scale)) for k, v in _pruned.items() if int(v * _scale) > 0}
             # Validate the pruned fleet DIRECTLY (no GA refinement). The
             # sensitivity analysis already identified the right move (remove
             # ship X, redistribute to the best positive-impact ship); applying
