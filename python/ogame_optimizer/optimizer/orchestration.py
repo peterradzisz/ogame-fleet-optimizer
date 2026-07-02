@@ -437,6 +437,72 @@ def optimize(
         _log.info("Additions budget: %d (multiplier*enemy_value); base: %d ships for %d res",
                   _ga_budget, base_count, base_cost)
 
+    # --- Early-exit: if base fleet already wins, don't add anything ---
+    # Adding ships to a fleet that already wins only adds more losses to report
+    # without improving the win. The user sees contradictory recommendations
+    # (additions proposed but tagged dead_weight).
+    if base_fleet and _ga_budget > 0:
+        _base_check = simulate_batch(
+            attacker=dict(base_fleet), defender=enemy_fleet,
+            defender_defenses=enemy_defenses, attacker_tech=attacker_tech,
+            defender_tech=enemy_tech, n_sims=200, base_seed=base_seed + 7777,
+            debris_pct=debris_pct, deuterium_in_debris=deuterium_in_debris,
+        )
+        _base_wp = float(_base_check.get("win_probability", 0))
+        _already_wins = (_base_wp >= 0.95) if mode == "attack" else ((1.0 - _base_wp) >= 0.95)
+        if _already_wins:
+            _log.info("Base fleet already wins (%.1f%%) - skipping optimization, returning base fleet as-is", _base_wp * 100)
+            # Build a minimal result with just the base fleet
+            t_done = time.time()
+            _base_fv = fleet_value(base_fleet)
+            _base_raw_loss = float(_base_check.get("mean_attacker_loss", 0))
+            _base_stddev = float(_base_check.get("stddev_attacker_loss", 0))
+            _base_pen = resource_preference_penalty(base_fleet, resource_weights, preference_beta)
+            _base_eff_loss = _base_raw_loss * _loss_scale + _base_pen
+            _stderr = _base_stddev / max(1, final_sims ** 0.5)
+            _debris_total = int(_base_check.get("debris_total", 0))
+            _net_profit = _debris_total - _base_raw_loss
+            return OptimizationResult(
+                recommended_fleet=dict(base_fleet),
+                fleet_value=_base_fv,
+                fleet_lost_pct=(_base_raw_loss / _base_fv * 100) if _base_fv > 0 else 0,
+                ships_lost_count=int(_base_check.get("ships_lost", 0)),
+                ships_initial_count=base_count,
+                debris_metal=int(_base_check.get("debris_metal", 0)),
+                debris_crystal=int(_base_check.get("debris_crystal", 0)),
+                debris_deuterium=int(_base_check.get("debris_deuterium", 0)),
+                debris_total=_debris_total,
+                net_profit=_net_profit,
+                net_profit_pct=(_net_profit / _base_fv * 100) if _base_fv > 0 else 0,
+                recyclers_needed=0,
+                recyclers_cost_total=0,
+                raw_loss_mean=_base_raw_loss,
+                win_threshold_met=True,
+                resource_weights=tuple(resource_weights),
+                preference_beta=preference_beta,
+                fleet_weighted_value=weighted_fleet_value(base_fleet, resource_weights),
+                resource_preference_penalty=_base_pen,
+                resource_preference_match_score=1.0,
+                expected_loss_mean=_base_eff_loss,
+                expected_loss_stddev=_base_stddev,
+                win_probability=_base_wp,
+                confidence_interval_95=[_base_eff_loss - 1.96 * _stderr, _base_eff_loss + 1.96 * _stderr],
+                sims_run_final=final_sims,
+                greedy_baseline_loss=0.0,
+                ga_improvement_pct=0.0,
+                time_elapsed_greedy=0.0,
+                time_elapsed_ga=0.0,
+                total_time=t_done - t0,
+                seed_used=base_seed,
+                mode=mode,
+                fleet_analysis={},
+                defender_fleet_analysis={},
+                base_fleet=dict(base_fleet),
+                base_fleet_cost=base_cost,
+                base_fleet_count=base_count,
+                recommended_additions={},
+            )
+
     # Phase A: greedy (or use provided seed_fleet for refinement)
     if base_fleet and _ga_budget == 0:
         _log.info('--- Phase A: SKIPPED (0.0x simulation, no additions budget) ---')
