@@ -18,6 +18,21 @@ from ogame_optimizer.optimizer.genetic import genetic_optimize, _drift_bounds_fo
 _log = get_logger("ogame.optimizer.orchestration")
 
 
+def _merge_fleet(base: Dict[str, int], additions: Dict[str, int]) -> Dict[str, int]:
+    """Merge a fixed base fleet with GA-produced additions (additive counts).
+
+    Only positive counts are carried. Used when base_fleet mode is active so
+    that every combat validation sees the full fleet the player would field.
+    """
+    if not base:
+        return dict(additions)
+    merged = {k: v for k, v in base.items() if v > 0}
+    for k, v in additions.items():
+        if v > 0:
+            merged[k] = merged.get(k, 0) + v
+    return merged
+
+
 @dataclass
 class OptimizationResult:
     recommended_fleet: Dict[str, int]
@@ -62,6 +77,11 @@ class OptimizationResult:
     fleet_weighted_value: float = 0.0
     resource_preference_penalty: float = 0.0
     resource_preference_match_score: float = 1.0
+    # base_fleet mode: the player's existing fleet (locked, always fielded)
+    base_fleet: Dict[str, int] = field(default_factory=dict)
+    base_fleet_cost: int = 0
+    base_fleet_count: int = 0
+    recommended_additions: Dict[str, int] = field(default_factory=dict)
 
 
 def _validate_inputs(
@@ -95,10 +115,14 @@ def _sensitivity_analysis(
     deuterium_in_debris: bool,
     base_seed: int = 42,
     n_sims: int = 200,
+    skip_ships: Optional[set] = None,
 ) -> Dict[str, Dict]:
     """For each ship in fleet, measure impact of removing it (redistribute to best remaining).
 
     Returns {ship: {"impact_pct": float, "tag": str, "redistributed_to": str, "loss_breakdown": dict}}.
+
+    When skip_ships is provided, those ship types are excluded from analysis
+    (used in base_fleet mode to avoid suggesting removal of locked ships).
 
     Tags:
     - critical: removing increases losses >20%
@@ -107,7 +131,8 @@ def _sensitivity_analysis(
     - dead_weight: non-fodder ship where fleet improves without it (<-5%)
     - fodder: cheap screening ship with negative impact — serves as cannon fodder, not truly dead weight
     """
-    present_ships = [s for s, c in fleet.items() if c > 0]
+    _skip = skip_ships or set()
+    present_ships = [s for s, c in fleet.items() if c > 0 and s not in _skip]
     if len(present_ships) <= 1:
         return {}
 
@@ -341,6 +366,7 @@ def optimize(
     resource_weights: tuple[float, float, float] = (2.0, 1.0, 1.0),
     preference_beta: float = 0.05,
     collector_class: bool = False,
+    base_fleet: Optional[Dict[str, int]] = None,
 ) -> OptimizationResult:
     enemy_defenses = enemy_defenses or {}
     t0 = time.time()
@@ -360,6 +386,21 @@ def optimize(
               resource_weights[0], resource_weights[1], resource_weights[2], preference_beta)
     _validate_inputs(enemy_fleet, enemy_defenses, budget)
 
+    # --- base_fleet mode: the player has an existing fleet and wants to know
+    # what to BUILD on top of it. The GA optimises additions only; the base
+    # is merged into every combat evaluation. Budget for additions =
+    # total_budget - base_cost.
+    base_cost = 0
+    base_count = 0
+    if base_fleet:
+        from ogame_optimizer.core.fleet import fleet_value as _fv_base
+        base_cost = _fv_base(base_fleet)
+        base_count = sum(base_fleet.values())
+        _log.info("Base fleet: cost=%d count=%d ships", base_cost, base_count)
+    _ga_budget = max(0, budget - base_cost) if base_fleet else budget
+    if base_fleet:
+        _log.info("Additional budget for GA: %d (total=%d - base=%d)", _ga_budget, budget, base_cost)
+
     # Phase A: greedy (or use provided seed_fleet for refinement)
     if seed_fleet:
         _log.info("--- Phase A: Using provided seed_fleet (refinement) ---")
@@ -377,7 +418,7 @@ def optimize(
             enemy_defenses=enemy_defenses,
             enemy_tech=enemy_tech,
             attacker_tech=attacker_tech,
-            budget=budget,
+            budget=_ga_budget,
             mode=mode,
             seed=base_seed,
             time_budget_s=1.0,
@@ -410,7 +451,7 @@ def optimize(
     progressive = generate_progressive_seeds(
         enemy_fleet=enemy_fleet,
         enemy_defenses=enemy_defenses,
-        budget=budget,
+        budget=_ga_budget,
         attacker_tech=attacker_tech,
         enemy_tech=enemy_tech,
         debris_pct=debris_pct,
@@ -432,11 +473,13 @@ def optimize(
 
     _log.info("Multi-start seeds: %s", {k: f"{sum(v.values())} ships" for k, v in seeds.items()})
 
-    # Track global best
-    global_best_fleet = dict(greedy_result.fleet)
+    # Track global best (merged = base + additions for combat; additions
+    # tracked separately so GA seeds / drift bounds operate on additions only).
+    global_best_additions = dict(greedy_result.fleet)
+    global_best_fleet = _merge_fleet(base_fleet, greedy_result.fleet) if base_fleet else dict(greedy_result.fleet)
     # Validate greedy baseline with proper simulation count (not single-sim artifact)
     greedy_validation = simulate_batch(
-        attacker=greedy_result.fleet,
+        attacker=global_best_fleet,
         defender=enemy_fleet,
         defender_defenses=enemy_defenses,
         attacker_tech=attacker_tech,
@@ -458,7 +501,7 @@ def optimize(
     for seed_name, seed_fleet in seeds.items():
         if explore_time < 0.5:
             continue
-        seed_drift = _drift_bounds_for_seed(seed_fleet, budget=budget)
+        seed_drift = _drift_bounds_for_seed(seed_fleet, budget=_ga_budget)
         if exclude_ships:
             for s in exclude_ships:
                 seed_drift[s] = (0, 0)
@@ -470,7 +513,7 @@ def optimize(
             enemy_defenses=enemy_defenses,
             enemy_tech=enemy_tech,
             attacker_tech=attacker_tech,
-            budget=budget,
+            budget=_ga_budget,
             mode=mode,
             config=GAConfig(
                 time_budget_seconds=explore_time, sims_per_eval=20, population_size=20,
@@ -483,11 +526,13 @@ def optimize(
             resource_weights=resource_weights,
             preference_beta=preference_beta,
             min_gain_pct=min_gain_pct,
+            base_fleet=base_fleet,
         )
 
-        # Quick validate
+        # Quick validate (merge base for combat)
+        _ga_merged = _merge_fleet(base_fleet, ga_round.best_fleet) if base_fleet else ga_round.best_fleet
         validation = simulate_batch(
-            attacker=ga_round.best_fleet,
+            attacker=_ga_merged,
             defender=enemy_fleet,
             defender_defenses=enemy_defenses,
             attacker_tech=attacker_tech,
@@ -495,18 +540,19 @@ def optimize(
             n_sims=100,
             base_seed=base_seed + 7777,
         )
-        _round_penalty = resource_preference_penalty(ga_round.best_fleet, resource_weights, preference_beta)
+        _round_penalty = resource_preference_penalty(_ga_merged, resource_weights, preference_beta)
         validated_loss = float(validation.get("mean_attacker_loss", float("inf"))) * _loss_scale + _round_penalty
 
         if validated_loss < global_best_loss:
-            global_best_fleet = dict(ga_round.best_fleet)
+            global_best_additions = dict(ga_round.best_fleet)
+            global_best_fleet = dict(_ga_merged)
             global_best_loss = validated_loss
             _log.info("  Start '%s': IMPROVED to %.0f (raw=%.0f + penalty=%.0f)", seed_name, global_best_loss, float(validation.get("mean_attacker_loss", 0)) * _loss_scale, _round_penalty)
         else:
             _log.info("  Start '%s': %.0f (no improvement)", seed_name, validated_loss)
 
     # Phase B2: Refine the best seed with increasing fidelity
-    best_drift = _drift_bounds_for_seed(global_best_fleet, budget=budget)
+    best_drift = _drift_bounds_for_seed(global_best_additions, budget=_ga_budget)
     if exclude_ships:
         for s in exclude_ships:
             best_drift[s] = (0, 0)
@@ -526,12 +572,12 @@ def optimize(
         _log.info("  Round '%s': %.1fs, %d sims/eval, mut=%.2f step=%.2f macro=%.2f realloc=%.2f",
                   rname, t_alloc, sims_eval, mut_rate, step_frac, macro_rate, realloc_rate)
         ga_round = genetic_optimize(
-            seed_fleet=global_best_fleet,
+            seed_fleet=global_best_additions,
             enemy_fleet=enemy_fleet,
             enemy_defenses=enemy_defenses,
             enemy_tech=enemy_tech,
             attacker_tech=attacker_tech,
-            budget=budget,
+            budget=_ga_budget,
             mode=mode,
             config=GAConfig(
                 time_budget_seconds=t_alloc, sims_per_eval=sims_eval, population_size=30,
@@ -544,10 +590,13 @@ def optimize(
             resource_weights=resource_weights,
             preference_beta=preference_beta,
             min_gain_pct=min_gain_pct,
+            base_fleet=base_fleet,
         )
 
+        # Validate merged fleet (base + additions)
+        _ga_merged = _merge_fleet(base_fleet, ga_round.best_fleet) if base_fleet else ga_round.best_fleet
         validation = simulate_batch(
-            attacker=ga_round.best_fleet,
+            attacker=_ga_merged,
             defender=enemy_fleet,
             defender_defenses=enemy_defenses,
             attacker_tech=attacker_tech,
@@ -557,11 +606,12 @@ def optimize(
             debris_pct=debris_pct,
             deuterium_in_debris=deuterium_in_debris,
         )
-        _round_penalty = resource_preference_penalty(ga_round.best_fleet, resource_weights, preference_beta)
+        _round_penalty = resource_preference_penalty(_ga_merged, resource_weights, preference_beta)
         validated_loss = float(validation.get("mean_attacker_loss", float("inf"))) * _loss_scale + _round_penalty
 
         if validated_loss < global_best_loss:
-            global_best_fleet = dict(ga_round.best_fleet)
+            global_best_additions = dict(ga_round.best_fleet)
+            global_best_fleet = dict(_ga_merged)
             global_best_loss = validated_loss
             _log.info("  Round '%s': IMPROVED to %.0f (raw=%.0f + penalty=%.0f)", rname, global_best_loss, float(validation.get("mean_attacker_loss", 0)) * _loss_scale, _round_penalty)
         else:
@@ -608,6 +658,7 @@ def optimize(
             enemy_tech=enemy_tech, base_loss=_prune_base_loss,
             debris_pct=debris_pct, deuterium_in_debris=deuterium_in_debris,
             base_seed=base_seed, n_sims=200,
+            skip_ships=set(base_fleet.keys()) if base_fleet else None,
         )
         _pruned, _pruned_names = _prune_dead_weight(ga_result.best_fleet, _prune_sens)
         if _pruned and sum(_pruned.values()) > 0:
@@ -751,6 +802,7 @@ def optimize(
         debris_pct=debris_pct,
         deuterium_in_debris=deuterium_in_debris,
         base_seed=base_seed,
+        skip_ships=set(base_fleet.keys()) if base_fleet else None,
     )
 
     # Compute per-ship survival rates (for shield marker in UI) using the
@@ -828,6 +880,14 @@ def optimize(
         mode=mode,
         fleet_analysis=fleet_analysis,
         defender_fleet_analysis=defender_fleet_analysis,
+        base_fleet=base_fleet if base_fleet else {},
+        base_fleet_cost=base_cost,
+        base_fleet_count=base_count,
+        recommended_additions=(
+            {s: max(0, ga_result.best_fleet.get(s, 0) - base_fleet.get(s, 0))
+             for s in ga_result.best_fleet
+             if ga_result.best_fleet.get(s, 0) > base_fleet.get(s, 0)}
+        ) if base_fleet else dict(ga_result.best_fleet),
     )
 
 

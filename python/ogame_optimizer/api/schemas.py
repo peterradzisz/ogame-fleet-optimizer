@@ -77,6 +77,9 @@ class OptimizeRequest(BaseModel):
     preference_beta: Optional[float] = None
     hyperspace_tech: int = 11
     collector_class: bool = False
+    # base_fleet mode: player's existing fleet (locked, always fielded).
+    # When provided, the GA optimises additions on top of this fleet.
+    base_fleet: Optional[Dict[str, int]] = None
 
     @field_validator("budget_multiplier")
     @classmethod
@@ -144,6 +147,11 @@ class OptimizeResponse(BaseModel):
     # Actual ROI of the recommended fleet = (debris - loss) / fleet_value * 100
     # (already in net_profit_pct, but provided under a more descriptive name)
     actual_roi_pct: float = 0.0
+    # base_fleet mode reporting
+    base_fleet: Dict[str, int] = Field(default_factory=dict)
+    base_fleet_cost: int = 0
+    base_fleet_count: int = 0
+    recommended_additions: Dict[str, int] = Field(default_factory=dict)
 
 
 class CombatRequest(BaseModel):

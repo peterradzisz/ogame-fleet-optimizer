@@ -1,6 +1,36 @@
 {% extends "base.html" %}
 {% block title %}OGame Fleet Optimizer{% endblock %}
 {% block content %}
+  <div class="tab-switcher" id="mode-tabs">
+    <button type="button" class="tab-btn active" data-tab="counter">Find Perfect Counter</button>
+    <button type="button" class="tab-btn" data-tab="myfleet">Start from My Fleet</button>
+  </div>
+
+  <fieldset id="my-fleet-section" class="hidden">
+    <legend>My Fleet (your existing ships — locked, always fielded)</legend>
+    <label>My Fleet Report
+      <textarea id="paste-my-fleet" rows="6" placeholder="Paste YOUR fleet here, e.g. Light Fighter / 5,772 / Cruiser / 1,709"></textarea>
+    </label>
+    <button type="button" id="parse-my-fleet-btn" class="btn-secondary">Parse my fleet</button>
+    <button type="button" id="clear-my-fleet-btn" class="btn-secondary">Clear</button>
+    <div id="my-fleet-status" class="parse-status"></div>
+    <div class="grid">
+      <label>Light Fighter<input type="number" name="my_light_fighter" min="0" value="0"></label>
+      <label>Heavy Fighter<input type="number" name="my_heavy_fighter" min="0" value="0"></label>
+      <label>Cruiser<input type="number" name="my_cruiser" min="0" value="0"></label>
+      <label>Battleship<input type="number" name="my_battleship" min="0" value="0"></label>
+      <label>Battlecruiser<input type="number" name="my_battlecruiser" min="0" value="0"></label>
+      <label>Bomber<input type="number" name="my_bomber" min="0" value="0"></label>
+      <label>Destroyer<input type="number" name="my_destroyer" min="0" value="0"></label>
+      <label>Deathstar<input type="number" name="my_deathstar" min="0" value="0"></label>
+      <label>Small Cargo<input type="number" name="my_small_cargo" min="0" value="0"></label>
+      <label>Large Cargo<input type="number" name="my_large_cargo" min="0" value="0"></label>
+      <label>Pathfinder<input type="number" name="my_pathfinder" min="0" value="0"></label>
+      <label>Reaper<input type="number" name="my_reaper" min="0" value="0"></label>
+    </div>
+    <p class="my-fleet-hint">The optimizer will keep these ships and suggest what to <strong>add</strong> within your remaining budget.</p>
+  </fieldset>
+
   <fieldset>
     <legend>Paste Fleet/Defenses (optional, fills fields below)</legend>
     <label>Fleet
@@ -10,6 +40,7 @@
       <textarea id="paste-defenses" rows="6" placeholder="Paste OGame defenses here, e.g. Rocket Launcher / 500 / Large Shield Dome / 1"></textarea>
     </label>
     <button type="button" id="parse-btn" class="btn-secondary">Parse and fill form</button>
+    <button type="button" id="clean-fleet-btn" class="btn-secondary">Clean fleet</button>
     <div id="parse-status" class="parse-status"></div>
   </fieldset>
 
@@ -96,6 +127,8 @@
           <option value="5.0">5.0X</option>
         </select>
       </label>
+      <span id="budget-hint-counter" class="budget-hint">Budget = enemy value &times; multiplier</span>
+      <span id="budget-hint-myfleet" class="budget-hint hidden">Additional budget = (enemy value &times; multiplier) &minus; your fleet cost</span>
       <label>Seed (optional)<input type="number" name="seed" placeholder="42"></label>
       <label>GA Time (seconds)<input type="number" id="ga_time" value="5" min="1" max="60"></label>
       <label>Final Sims<input type="number" id="final_sims" value="500" min="100" max="5000" step="100"></label>
@@ -237,5 +270,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/app.js?v=20260701b"></script>
+<script src="/static/app.js?v=20260702a"></script>
 {% endblock %}

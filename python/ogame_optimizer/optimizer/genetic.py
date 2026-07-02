@@ -313,10 +313,33 @@ def _evaluate_population_with_crn(
     resource_weights: tuple = (1.0, 1.0, 1.0),
     preference_beta: float = 0.0,
     min_gain_pct: float = 0.0,
+    base_fleet: Optional[Dict[str, int]] = None,
 ) -> List[float]:
-    """Evaluate all fleets in population using CRN (same base_seed for all)."""
+    """Evaluate all fleets in population using CRN (same base_seed for all).
+
+    When base_fleet is provided, each candidate (additions-only) is merged
+    with the fixed base fleet for combat evaluation: combat_fleet[ship] =
+    base[ship] + additions[ship]. The GA chromosomes and all budget / penalty
+    checks still operate on the additions-only portion, so the GA optimises
+    what to build on top of the existing fleet within budget (which the
+    caller sets to the additional budget). The anti-camping under-budget
+    penalty is disabled in this mode because a valid answer can be "build
+    nothing" (the base fleet already wins).
+    """
+    # Build the fleets actually sent into combat.
+    if base_fleet:
+        combat_fleets = []
+        for fleet in population_fleets:
+            merged = dict(base_fleet)
+            for ship, count in fleet.items():
+                if count > 0:
+                    merged[ship] = merged.get(ship, 0) + count
+            combat_fleets.append(merged)
+    else:
+        combat_fleets = population_fleets
+
     results = evaluate_population(
-        attacker_fleets=population_fleets,
+        attacker_fleets=combat_fleets,
         defender=enemy_fleet,
         defender_defenses=enemy_defenses,
         attacker_tech=attacker_tech,
@@ -339,11 +362,15 @@ def _evaluate_population_with_crn(
             fitnesses.append(float("-inf"))
             continue
 
-        # Skip empty fleets (can't evaluate, can't fight).
-        if own_fv <= 0:
+        # Skip fleets that cannot fight at all. When base_fleet is active the
+        # combat fleet is the merge, so even zero additions can still fight.
+        combat_fv = fleet_value(combat_fleets[i]) if combat_fleets[i] else 0
+        if combat_fv <= 0:
             fitnesses.append(float("-inf"))
             continue
 
+        # Resource-preference penalty is computed on the additions the GA
+        # controls (so it guides the GA), not the fixed base.
         penalty = resource_preference_penalty(
             population_fleets[i], resource_weights, preference_beta
         ) if preference_beta > 0 else 0.0
@@ -376,9 +403,12 @@ def _evaluate_population_with_crn(
                 base += (enemy_loss * debris_pct) / max(budget, 1)
             # Anti-camping: penalise fleets that spend <90% of budget, so the
             # GA can't "minimise losses" by shrinking the fleet to nothing.
-            util = own_fv / max(budget, 1)
-            if util < _UNDERBUDGET_FLOOR:
-                base -= (_UNDERBUDGET_FLOOR - util) * _UNDERBUDGET_PENALTY
+            # Disabled in base_fleet mode: zero additions is a valid answer
+            # ("don't build anything"), not camping.
+            if not base_fleet:
+                util = own_fv / max(budget, 1)
+                if util < _UNDERBUDGET_FLOOR:
+                    base -= (_UNDERBUDGET_FLOOR - util) * _UNDERBUDGET_PENALTY
             fitnesses.append(base)
     return fitnesses
 
@@ -398,6 +428,7 @@ def genetic_optimize(
     resource_weights: tuple = (1.0, 1.0, 1.0),
     preference_beta: float = 0.0,
     min_gain_pct: float = 0.0,
+    base_fleet: Optional[Dict[str, int]] = None,
 ) -> GAResult:
     """Run the GA pipeline."""
     if config is None:
@@ -436,6 +467,7 @@ def genetic_optimize(
             resource_weights=resource_weights,
             preference_beta=preference_beta,
             min_gain_pct=min_gain_pct,
+            base_fleet=base_fleet,
         )
         total_evals += len(fitnesses)
         last_fitnesses = fitnesses

@@ -2,6 +2,7 @@
 (function() {
   let lastResult = null;
   let refineCount = 0;
+  let activeTab = "counter"; // "counter" or "myfleet"
 
   const SHIP_KEYS = ["light_fighter","heavy_fighter","cruiser","battleship","battlecruiser","bomber","destroyer","deathstar","small_cargo","large_cargo","espionage_probe","pathfinder","recycler","reaper"];
   const DEFENSE_KEYS = ["rocket_launcher","light_laser","heavy_laser","gauss_cannon","ion_cannon","plasma_turret","small_shield_dome","large_shield_dome"];
@@ -54,6 +55,18 @@
       if (v > 0) out[k] = v;
     }
     return out;
+  }
+  function readMyFleet() {
+    var fleet = {};
+    var inputs = document.querySelectorAll('input[name^="my_"]');
+    for (var i = 0; i < inputs.length; i++) {
+      var v = parseInt(inputs[i].value || "0", 10);
+      if (v > 0) {
+        var key = inputs[i].name.replace(/^my_/, "");
+        fleet[key] = v;
+      }
+    }
+    return fleet;
   }
   function fmtNum(n) {
     if (n === null || n === undefined) return "-";
@@ -184,6 +197,12 @@
       }
       cards.push(["Recyclers Needed", recLabel]);
     }
+    // base_fleet mode: show base + additions breakdown
+    if (data.base_fleet && Object.keys(data.base_fleet).length > 0) {
+      var addCost = data.fleet_value - (data.base_fleet_cost || 0);
+      cards.push(["Existing Fleet", fmtNum(data.base_fleet_count || 0) + " ships (" + fmtNum(data.base_fleet_cost || 0) + " res)"]);
+      cards.push(["Additions Cost", fmtNum(addCost) + " res"]);
+    }
     cards.push(["Loss Stddev", fmtNum(data.expected_loss_stddev)]);
     cards.push(["95% CI", fmtNum(ci[0]) + " - " + fmtNum(ci[1])]);
     cards.push(["GA Improvement", fmtNum(data.ga_improvement_pct) + "%"]);
@@ -277,6 +296,12 @@
         ? "<td class=\"value-col\"" + breakdownText + ">" + (fr.impact_pct != null ? fr.impact_pct.toFixed(1) + "%" : "-") + "</td>"
         : "<td class=\"value-col\">-</td>";
       var shipLabel = fr.key.replace(/_/g, " ");
+      // In base_fleet mode, annotate ships the player already owns
+      if (data.base_fleet && data.base_fleet[fr.key]) {
+        var baseCnt = data.base_fleet[fr.key];
+        var newCnt = fr.count - baseCnt;
+        shipLabel += ' <span class="existing-badge" title="You already have ' + fmtNum(baseCnt) + '">existing: ' + fmtNum(baseCnt) + (newCnt > 0 ? ' +' + fmtNum(newCnt) + ' new' : '') + '</span>';
+      }
       if (isSlowOrExpensive(fr.key)) shipLabel += ' <span style="color:#f87171;font-weight:bold" title="Slow or deuterium-expensive">*</span>';
       if (hasAnalysis) {
         var sv = (analysis[fr.key] || {}).survival_pct;
@@ -486,6 +511,91 @@ if (parseBtn) {
   if (betaSlider && betaLabel) {
     betaSlider.addEventListener("input", function() {
       betaLabel.textContent = parseFloat(betaSlider.value).toFixed(2);
+    });
+  }
+
+  // ---- Tab switching ----
+  var tabBtns = document.querySelectorAll(".tab-btn");
+  var myFleetSection = document.getElementById("my-fleet-section");
+  var budgetHintCounter = document.getElementById("budget-hint-counter");
+  var budgetHintMyfleet = document.getElementById("budget-hint-myfleet");
+  var multSelect = document.querySelector('select[name="budget_multiplier"]');
+  function switchTab(tabName) {
+    activeTab = tabName;
+    tabBtns.forEach(function(b) { b.classList.toggle("active", b.dataset.tab === tabName); });
+    if (myFleetSection) myFleetSection.classList.toggle("hidden", tabName !== "myfleet");
+    if (budgetHintCounter) budgetHintCounter.classList.toggle("hidden", tabName === "myfleet");
+    if (budgetHintMyfleet) budgetHintMyfleet.classList.toggle("hidden", tabName !== "myfleet");
+    // Default multiplier per tab
+    if (multSelect) {
+      multSelect.value = tabName === "myfleet" ? "0.1" : "1.0";
+    }
+    // Reset refine state on tab switch
+    if (lastResult) {
+      lastResult = null;
+      refineCount = 0;
+      if (refineBtn) refineBtn.disabled = true;
+    }
+  }
+  tabBtns.forEach(function(b) {
+    b.addEventListener("click", function() { switchTab(b.dataset.tab); });
+  });
+
+  // ---- Clean fleet button (clears enemy inputs) ----
+  var cleanBtn = document.getElementById("clean-fleet-btn");
+  if (cleanBtn) {
+    cleanBtn.addEventListener("click", function() {
+      SHIP_KEYS.forEach(function(k) {
+        var el = document.querySelector('input[name="' + k + '"]');
+        if (el) el.value = "0";
+      });
+      DEFENSE_KEYS.forEach(function(k) {
+        var el = document.querySelector('input[name="' + k + '"]');
+        if (el) el.value = "0";
+      });
+      var pf = document.getElementById("paste-fleet");
+      var pd = document.getElementById("paste-defenses");
+      if (pf) pf.value = "";
+      if (pd) pd.value = "";
+      var sb = document.getElementById("parse-status");
+      if (sb) { sb.textContent = "Enemy fleet and defenses cleared."; sb.className = "parse-status parse-ok"; }
+    });
+  }
+
+  // ---- Parse my fleet button ----
+  var parseMyBtn = document.getElementById("parse-my-fleet-btn");
+  if (parseMyBtn) {
+    parseMyBtn.addEventListener("click", function() {
+      var sb = document.getElementById("my-fleet-status");
+      if (sb) { sb.className = "parse-status"; sb.textContent = ""; }
+      var text = document.getElementById("paste-my-fleet").value;
+      if (!text.trim()) {
+        if (sb) { sb.textContent = "Nothing to parse."; sb.classList.add("parse-warning"); }
+        return;
+      }
+      var r = parseOGameReport(text, SHIP_NAME_MAP, UNSUPPORTED);
+      // Fill my_* inputs
+      for (var k in r.parsed) {
+        var el = document.querySelector('input[name="my_' + k + '"]');
+        if (el) el.value = r.parsed[k];
+      }
+      var msgs = ["Fleet: " + Object.keys(r.parsed).length + " types parsed"];
+      if (r.unsupported.length) msgs.push("Skipped (unsupported): " + r.unsupported.join(", "));
+      if (r.unknown.length) msgs.push("Unknown: " + r.unknown.join(", "));
+      if (sb) { sb.innerHTML = msgs.map(function(m) { return "<div>" + m + "</div>"; }).join(""); sb.classList.add("parse-ok"); }
+    });
+  }
+
+  // ---- Clear my fleet button ----
+  var clearMyBtn = document.getElementById("clear-my-fleet-btn");
+  if (clearMyBtn) {
+    clearMyBtn.addEventListener("click", function() {
+      var inputs = document.querySelectorAll('input[name^="my_"]');
+      inputs.forEach(function(el) { el.value = "0"; });
+      var ta = document.getElementById("paste-my-fleet");
+      if (ta) ta.value = "";
+      var sb = document.getElementById("my-fleet-status");
+      if (sb) { sb.textContent = ""; sb.className = "parse-status"; }
     });
   }
 

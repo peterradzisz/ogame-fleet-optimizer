@@ -233,3 +233,63 @@ textarea:focus { outline: 2px solid #8aa9ff; outline-offset: 1px; }
 .copy-toast.copy-toast-show {
   opacity: 1;
 }
+
+/* ---- Tab switcher ---- */
+.tab-switcher {
+  display: flex;
+  gap: 0;
+  margin-bottom: 1rem;
+  border-bottom: 2px solid #2a2a4e;
+}
+.tab-btn {
+  padding: 10px 20px;
+  border: 1px solid #2a2a4e;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  background: #1a1a2e;
+  color: #8b95a7;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.tab-btn:hover {
+  background: #222244;
+  color: #c0c8d8;
+}
+.tab-btn.active {
+  background: #2a2a6e;
+  color: #e0e0f0;
+  border-color: #4a4aaa;
+  font-weight: 600;
+}
+
+/* ---- My fleet section ---- */
+#my-fleet-section {
+  border-color: #3a3a6a;
+  background: rgba(42, 42, 110, 0.08);
+}
+.my-fleet-hint {
+  font-size: 0.85em;
+  color: #8b95a7;
+  margin-top: 0.5rem;
+}
+
+/* ---- Budget hint ---- */
+.budget-hint {
+  display: block;
+  font-size: 0.82em;
+  color: #8b95a7;
+  margin: 4px 0;
+}
+
+/* ---- Existing-fleet badge in results table ---- */
+.existing-badge {
+  display: inline-block;
+  font-size: 0.78em;
+  color: #a5b4d0;
+  background: rgba(74, 74, 170, 0.2);
+  padding: 1px 6px;
+  border-radius: 4px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
