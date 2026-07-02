@@ -463,6 +463,15 @@ def optimize(
             _debris_total = int(_base_check.get("debris_total", 0))
             _net_profit = _debris_total - _base_raw_loss
 
+            # Compute recycler requirements (matches main path formula)
+            _recycler_cap = int(20000 * (1 + hyperspace_tech * 0.05) * (1.25 if collector_class else 1.0))
+            _recyclers_needed = (_debris_total + _recycler_cap - 1) // _recycler_cap if _recycler_cap > 0 else 0
+            _rec_cost_tuple = (10000, 6000, 2000)  # Metal, Crystal, Deuterium per recycler
+            _recyclers_cost_metal = _recyclers_needed * _rec_cost_tuple[0]
+            _recyclers_cost_crystal = _recyclers_needed * _rec_cost_tuple[1]
+            _recyclers_cost_deuterium = _recyclers_needed * _rec_cost_tuple[2]
+            _recyclers_cost_total = _recyclers_cost_metal + _recyclers_cost_crystal + _recyclers_cost_deuterium
+
             # Compute sensitivity analysis for the base fleet.
             # Skip base ships from impact tags - they are locked and can't be
             # removed, so showing 'dead_weight' for them is misleading.
@@ -517,8 +526,12 @@ def optimize(
                 debris_total=_debris_total,
                 net_profit=_net_profit,
                 net_profit_pct=(_net_profit / _base_fv * 100) if _base_fv > 0 else 0,
-                recyclers_needed=0,
-                recyclers_cost_total=0,
+                recyclers_needed=_recyclers_needed,
+                recycler_capacity=_recycler_cap,
+                recyclers_cost_metal=_recyclers_cost_metal,
+                recyclers_cost_crystal=_recyclers_cost_crystal,
+                recyclers_cost_deuterium=_recyclers_cost_deuterium,
+                recyclers_cost_total=_recyclers_cost_total,
                 raw_loss_mean=_base_raw_loss,
                 win_threshold_met=True,
                 resource_weights=tuple(resource_weights),
