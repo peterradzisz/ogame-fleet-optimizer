@@ -288,26 +288,37 @@ def _fire(attacker_side: dict, defender_side: dict, rng: random.Random):
     for k, d in defender_side.items():
         fractions[k] = d["count"] / total_def_count if d["count"] > 0 else 0.0
 
-    # Pre-compute rapidfire shot multipliers for each attacker type.
+    # Per-pair rapidfire model.
     #
-    # FIX: continuation probability per RF target is (rf-1)/rf, giving an
-    # expected shot count of `rf` (e.g. RF=15 -> 15 shots). This matches the
-    # Rust core and the ogamespec authoritative source. The previous formula
-    # rf/(rf+1) yielded rf+1 expected shots, a ~6.7% overestimate for RF=15
-    # and an internal inconsistency with the Rust resolver.
-    atk_info = {}
+    # FIX: rapidfire is per (attacker_type, defender_type) pair. Previously
+    # the code computed a single shot_multiplier per attacker type, which
+    # DILUTED the rapidfire bonus when the defender had many types (e.g. BC
+    # RF=4 vs Cruisers was almost completely lost when Cruisers were only 3%
+    # of the defender). Now each pair gets its own multiplier: BCs get 4x
+    # vs Cruisers, 5x vs Probes, etc., independently.
+    #
+    # For each pair: if attacker has RF=N vs defender type present at
+    # fraction f, the continuation probability for that pair is (N-1)/N
+    # (giving expected N shots). Effective shots = attacker_count *
+    # shot_multiplier * f. The shot_multiplier is bounded at 20x for
+    # numerical stability against very large RF values (Deathstar vs EP=1250).
+    atk_info = {}  # atk_info[atk_type][def_type] = (per_shot_dmg, effective_shots)
     for k_atk, atk in attacker_side.items():
         if atk["count"] == 0 or atk["atk"] <= 0:
             continue
-        cont_prob = 0.0
+        atk_info[k_atk] = {}
+        per_shot = atk["atk"]
         for k_def, frac in fractions.items():
+            if frac <= 0:
+                continue
             rf = RAPIDFIRE.get((k_atk, k_def), 0)
-            if rf > 1 and frac > 0:
-                cont_prob += frac * (rf - 1) / rf
-        # Cap the multiplier at 20x for numerical stability against very
-        # large RF values (e.g. Deathstar vs Espionage Probe = 1250).
-        shot_multiplier = 1.0 / (1.0 - cont_prob) if cont_prob < 0.95 else 20.0
-        atk_info[k_atk] = (atk["atk"], atk["count"] * shot_multiplier)
+            if rf > 1:
+                cont_prob = (rf - 1) / rf
+                shot_multiplier = 1.0 / (1.0 - cont_prob) if cont_prob < 0.95 else 20.0
+            else:
+                shot_multiplier = 1.0
+            effective_shots = atk["count"] * shot_multiplier * frac
+            atk_info[k_atk][k_def] = (per_shot, effective_shots)
 
     # For each defender type: resolve incoming fire with per-shot overkill
     # handling.
@@ -341,20 +352,22 @@ def _fire(attacker_side: dict, defender_side: dict, rng: random.Random):
         spike_kills = 0.0   # shots that each obliterate one whole unit
         chip_dmg = 0.0      # accumulated sub-lethal damage
 
-        for k_atk, (per_shot, effective_shots) in atk_info.items():
+        for k_atk, pair_info in atk_info.items():
+            if k_def not in pair_info:
+                continue
+            per_shot, effective_shots = pair_info[k_def]
             # OGame shield bounce: a shot below 1% of the unit's max shield
             # is completely absorbed and wasted.
             if per_shot < unit_shield * 0.01:
                 continue
-            shots = effective_shots * frac
-            if shots < 0.5:
+            if effective_shots < 0.5:
                 continue
             if per_shot >= unit_eff_hp:
                 # SPIKE: one shot kills one unit; overkill is discarded.
-                spike_kills += shots
+                spike_kills += effective_shots
             else:
                 # CHIP: pools into shield/hull of the surviving stack.
-                chip_dmg += per_shot * shots
+                chip_dmg += per_shot * effective_shots
 
         # Resolve spike kills. Each consumes one whole unit (its shield AND
         # its hull), so this damage never enters the shared shield pool.
