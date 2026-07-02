@@ -117,6 +117,9 @@ def _sensitivity_analysis(
     n_sims: int = 200,
     skip_ships: Optional[set] = None,
     base_fleet: Optional[Dict[str, int]] = None,
+    loss_scale: float = 1.0,
+    resource_weights: tuple = (1.0, 1.0, 1.0),
+    preference_beta: float = 0.0,
 ) -> Dict[str, Dict]:
     """For each ship in fleet, measure impact of removing it (redistribute to best remaining).
 
@@ -152,6 +155,9 @@ def _sensitivity_analysis(
     ship_values = {s: sum(SHIPS_COST.get(s, (0, 0, 0))) * fleet[s] for s in present_ships}
 
     # Get baseline per-type losses via single detailed simulation
+    # Convert base_loss (raw) to effective loss for consistent comparison
+    _base_pen = resource_preference_penalty(fleet, resource_weights, preference_beta) if preference_beta > 0 else 0.0
+    _base_effective_loss = base_loss * loss_scale + _base_pen
     base_per_type = {}
     try:
         from ogame_optimizer.core.fast_combat import simulate_combat_fast
@@ -198,13 +204,16 @@ def _sensitivity_analysis(
             debris_pct=debris_pct,
             deuterium_in_debris=deuterium_in_debris,
         )
-        variant_loss = float(result.get("mean_attacker_loss", base_loss))
+        raw_loss = float(result.get("mean_attacker_loss", base_loss))
+        # Apply same effective-loss formula as the GA so tags are consistent
+        _pen = resource_preference_penalty(variant, resource_weights, preference_beta) if preference_beta > 0 else 0.0
+        variant_loss = raw_loss * loss_scale + _pen
         if base_loss > 0:
             impact_pct = ((variant_loss - base_loss) / base_loss) * 100
         elif variant_loss > 0:
-            impact_pct = 999.0  # Fleet had 0 loss, removing this ship causes loss = critical
+            impact_pct = 999.0
         else:
-            impact_pct = 0.0  # Both zero - ship doesn't matter
+            impact_pct = 0.0
 
         # Compute per-type loss breakdown
         loss_breakdown = {}
@@ -709,6 +718,8 @@ def optimize(
             debris_pct=debris_pct, deuterium_in_debris=deuterium_in_debris,
             base_seed=base_seed, n_sims=200,
             base_fleet=base_fleet if base_fleet else None,
+            loss_scale=_loss_scale, resource_weights=resource_weights,
+            preference_beta=preference_beta,
         )
         _pruned, _pruned_names = _prune_dead_weight(ga_result.best_fleet, _prune_sens)
         if _pruned and sum(_pruned.values()) > 0:
@@ -865,6 +876,8 @@ def optimize(
         deuterium_in_debris=deuterium_in_debris,
         base_seed=base_seed,
         base_fleet=base_fleet if base_fleet else None,
+        loss_scale=_loss_scale, resource_weights=resource_weights,
+        preference_beta=preference_beta,
     )
 
     # Compute per-ship survival rates (for shield marker in UI) using the
