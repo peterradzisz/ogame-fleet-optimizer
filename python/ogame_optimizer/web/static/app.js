@@ -127,6 +127,9 @@
       };
 
       console.log("POST /api/optimize payload:", payload);
+      console.log("DIAG activeTab:", activeTab);
+      console.log("DIAG base_fleet in payload:", payload.base_fleet);
+      console.log("DIAG base_fleet ships:", payload.base_fleet ? Object.keys(payload.base_fleet).length : 0);
       lastRequest = payload;
       var resp = await fetch("/api/optimize", {
         method: "POST",

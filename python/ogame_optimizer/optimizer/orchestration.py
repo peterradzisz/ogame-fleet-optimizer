@@ -488,6 +488,8 @@ def optimize(
     # tracked separately so GA seeds / drift bounds operate on additions only).
     global_best_additions = dict(greedy_result.fleet)
     global_best_fleet = _merge_fleet(base_fleet, greedy_result.fleet) if base_fleet else dict(greedy_result.fleet)
+    if base_fleet:
+        _log.info('DIAG: post-greedy global_best_fleet=%s (cost=%d)', {k:v for k,v in global_best_fleet.items() if v}, fleet_value(global_best_fleet) if global_best_fleet else 0)
     # Validate greedy baseline with proper simulation count (not single-sim artifact)
     greedy_validation = simulate_batch(
         attacker=global_best_fleet,
@@ -633,6 +635,8 @@ def optimize(
     ga_result = _Compat()
     ga_result.best_fleet = global_best_fleet
     ga_result.best_fitness = -global_best_loss
+    if base_fleet:
+        _log.info('DIAG: pre-final ga_result.best_fleet=%s', {k: v for k, v in ga_result.best_fleet.items() if v})
 
     t2 = time.time()
     _log.info("Phase B done in %.2fs: best_loss=%.0f", t2 - t1, global_best_loss)
@@ -734,6 +738,7 @@ def optimize(
 
     # Final validation
     _log.info("--- Final validation (%d sims) ---", final_sims)
+    _log.info("DIAG: final validation fleet=%s", {k: v for k, v in ga_result.best_fleet.items() if v})
     final = simulate_batch(
         attacker=ga_result.best_fleet,
         defender=enemy_fleet,

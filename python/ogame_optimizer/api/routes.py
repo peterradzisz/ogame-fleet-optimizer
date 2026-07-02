@@ -54,6 +54,11 @@ def list_ships() -> dict:
     ]}
 
 
+@router.get("/api/version")
+def get_version() -> dict:
+    return {"version": "20260702d", "base_fleet_supported": True}
+
+
 @router.get("/api/defenses")
 def list_defenses() -> dict:
     _log.debug("Listing defenses")
@@ -104,8 +109,10 @@ def run_combat(req: CombatRequest) -> CombatResponse:
 
 @router.post("/api/optimize", response_model=OptimizeResponse)
 def run_optimize(req: OptimizeRequest) -> OptimizeResponse:
-    _log.info("Optimize request: enemy_fleet=%s enemy_defenses=%s multiplier=%s mode=%s",
-              req.enemy_fleet.ships, req.enemy_defenses.defenses, req.budget_multiplier, req.mode)
+    _log.info("=== /api/optimize REQUEST ===")
+    _log.info("  multiplier=%s mode=%s", req.budget_multiplier, req.mode)
+    _log.info("  enemy_fleet=%s", req.enemy_fleet.ships)
+    _log.info("  base_fleet=%s (%d ships)", req.base_fleet, sum(req.base_fleet.values()) if req.base_fleet else 0)
     try:
         result: OptimizationResult = optimize(
             enemy_fleet=req.enemy_fleet.ships,
