@@ -462,6 +462,45 @@ def optimize(
             _stderr = _base_stddev / max(1, final_sims ** 0.5)
             _debris_total = int(_base_check.get("debris_total", 0))
             _net_profit = _debris_total - _base_raw_loss
+
+            # Compute sensitivity analysis for the base fleet (shows impact tags)
+            _base_sens = _sensitivity_analysis(
+                fleet=dict(base_fleet), enemy_fleet=enemy_fleet,
+                enemy_defenses=enemy_defenses, attacker_tech=attacker_tech,
+                enemy_tech=enemy_tech, base_loss=_base_raw_loss,
+                debris_pct=debris_pct, deuterium_in_debris=deuterium_in_debris,
+                base_seed=base_seed, n_sims=200,
+                loss_scale=_loss_scale, resource_weights=resource_weights,
+                preference_beta=preference_beta,
+            )
+
+            # Compute defender analysis (per-ship survival)
+            _def_analysis = {}
+            try:
+                _atk_surv_mean = _base_check.get("attacker_survivors_mean", {}) or {}
+                _def_surv_mean = _base_check.get("defender_survivors_mean", {}) or {}
+                _base_ships_lost = 0
+                for _ship, _count in base_fleet.items():
+                    if _count > 0:
+                        _surv = float(_atk_surv_mean.get(_ship, 0))
+                        _surv_pct = round((_surv / _count) * 100, 1)
+                        if _ship not in _base_sens:
+                            _base_sens[_ship] = {}
+                        _base_sens[_ship]["survival_pct"] = _surv_pct
+                        _base_sens[_ship]["surviving_count"] = round(_surv)
+                        _base_ships_lost += max(0, _count - round(_surv))
+                for _ship, _count in enemy_fleet.items():
+                    if _count > 0:
+                        _surv = float(_def_surv_mean.get(_ship, 0))
+                        _surv_pct = round((_surv / _count) * 100, 1)
+                        _def_analysis[_ship] = {
+                            "count": _count,
+                            "surviving_count": round(_surv),
+                            "survival_pct": _surv_pct,
+                        }
+            except Exception:
+                pass
+
             return OptimizationResult(
                 recommended_fleet=dict(base_fleet),
                 fleet_value=_base_fv,
@@ -495,8 +534,8 @@ def optimize(
                 total_time=t_done - t0,
                 seed_used=base_seed,
                 mode=mode,
-                fleet_analysis={},
-                defender_fleet_analysis={},
+                fleet_analysis=_base_sens,
+                defender_fleet_analysis=_def_analysis,
                 base_fleet=dict(base_fleet),
                 base_fleet_cost=base_cost,
                 base_fleet_count=base_count,
