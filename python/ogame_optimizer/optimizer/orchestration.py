@@ -116,27 +116,36 @@ def _sensitivity_analysis(
     base_seed: int = 42,
     n_sims: int = 200,
     skip_ships: Optional[set] = None,
+    base_fleet: Optional[Dict[str, int]] = None,
 ) -> Dict[str, Dict]:
     """For each ship in fleet, measure impact of removing it (redistribute to best remaining).
 
     Returns {ship: {"impact_pct": float, "tag": str, "redistributed_to": str, "loss_breakdown": dict}}.
 
-    When skip_ships is provided, those ship types are excluded from analysis
-    (used in base_fleet mode to avoid suggesting removal of locked ships).
+    When base_fleet is provided: only analyzes ships with additions (count >
+    base count). When removing such a ship, only the additions are removed
+    (base is preserved). skip_ships (legacy) excludes ship types entirely.
 
     Tags:
     - critical: removing increases losses >20%
     - important: 5-20% increase
     - negligible: -5% to +5% change
     - dead_weight: non-fodder ship where fleet improves without it (<-5%)
-    - fodder: cheap screening ship with negative impact — serves as cannon fodder, not truly dead weight
+    - fodder: cheap screening ship with negative impact - serves as cannon fodder, not truly dead weight
     """
     _skip = skip_ships or set()
-    present_ships = [s for s, c in fleet.items() if c > 0 and s not in _skip]
+    # In base_fleet mode, only analyze ships with additions (count > base count)
+    present_ships = []
+    for s, cnt in fleet.items():
+        if cnt <= 0 or s in _skip:
+            continue
+        if base_fleet and cnt <= base_fleet.get(s, 0):
+            continue
+        present_ships.append(s)
     if len(present_ships) <= 1:
         return {}
 
-    # Ships that serve as cannon fodder — negative impact is expected, not a flaw
+    # Ships that serve as cannon fodder - negative impact is expected, not a flaw
     FODDER_SHIPS = {"light_fighter", "heavy_fighter", "small_cargo", "large_cargo", "espionage_probe"}
 
     # Ship value contributions for redistribution target selection
@@ -163,9 +172,15 @@ def _sensitivity_analysis(
             continue
         target = max(remaining, key=remaining.get)
 
-        # Build variant: remove this ship, add freed budget as target
-        variant = {k: v for k, v in fleet.items() if k != ship}
-        freed_budget = sum(SHIPS_COST.get(ship, (0, 0, 0))) * fleet[ship]
+        # Build variant: remove this ship. In base_fleet mode, keep base count.
+        if base_fleet and ship in base_fleet:
+            base_count = base_fleet[ship]
+            variant = dict(fleet)
+            variant[ship] = base_count
+            freed_budget = sum(SHIPS_COST.get(ship, (0, 0, 0))) * (fleet[ship] - base_count)
+        else:
+            variant = {k: v for k, v in fleet.items() if k != ship}
+            freed_budget = sum(SHIPS_COST.get(ship, (0, 0, 0))) * fleet[ship]
         target_cost = sum(SHIPS_COST.get(target, (0, 0, 0)))
         extra_count = 0
         if target_cost > 0:
@@ -189,7 +204,7 @@ def _sensitivity_analysis(
         elif variant_loss > 0:
             impact_pct = 999.0  # Fleet had 0 loss, removing this ship causes loss = critical
         else:
-            impact_pct = 0.0  # Both zero — ship doesn't matter
+            impact_pct = 0.0  # Both zero - ship doesn't matter
 
         # Compute per-type loss breakdown
         loss_breakdown = {}
@@ -693,7 +708,7 @@ def optimize(
             enemy_tech=enemy_tech, base_loss=_prune_base_loss,
             debris_pct=debris_pct, deuterium_in_debris=deuterium_in_debris,
             base_seed=base_seed, n_sims=200,
-            skip_ships=set(base_fleet.keys()) if base_fleet else None,
+            base_fleet=base_fleet if base_fleet else None,
         )
         _pruned, _pruned_names = _prune_dead_weight(ga_result.best_fleet, _prune_sens)
         if _pruned and sum(_pruned.values()) > 0:
@@ -849,7 +864,7 @@ def optimize(
         debris_pct=debris_pct,
         deuterium_in_debris=deuterium_in_debris,
         base_seed=base_seed,
-        skip_ships=set(base_fleet.keys()) if base_fleet else None,
+        base_fleet=base_fleet if base_fleet else None,
     )
 
     # Compute per-ship survival rates (for shield marker in UI) using the
