@@ -1,4 +1,4 @@
-// OGame Fleet Optimizer - app.js v20260622d
+// OGame Fleet Optimizer - app.js v20260702e
 (function() {
   let lastResult = null;
   let lastRequest = null;
