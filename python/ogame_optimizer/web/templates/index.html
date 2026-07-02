@@ -28,6 +28,23 @@
       <label>Pathfinder<input type="number" name="my_pathfinder" min="0" value="0"></label>
       <label>Reaper<input type="number" name="my_reaper" min="0" value="0"></label>
     </div>
+    <div class="preset-row">
+      <label class="preset-label">Preset
+        <select id="my-preset-select"><option value="">-- Saved --</option></select>
+      </label>
+      <button type="button" id="my-preset-load" class="btn-secondary btn-small">Load</button>
+      <button type="button" id="my-preset-save" class="btn-secondary btn-small">Save</button>
+      <button type="button" id="my-preset-delete" class="btn-secondary btn-small">Delete</button>
+      <button type="button" id="my-preset-export-txt" class="btn-secondary btn-small">Export TXT</button>
+      <button type="button" id="my-preset-export-xml" class="btn-secondary btn-small">Export XML</button>
+      <button type="button" id="my-preset-import-toggle" class="btn-secondary btn-small">Import</button>
+    </div>
+    <div id="my-import-section" class="import-section hidden">
+      <textarea id="my-import-textarea" rows="6" placeholder="Paste fleet (TXT or XML)..."></textarea>
+      <button type="button" id="my-import-confirm" class="btn-primary btn-small">Import</button>
+      <button type="button" id="my-import-cancel" class="btn-secondary btn-small">Cancel</button>
+      <span id="my-import-status" class="parse-status"></span>
+    </div>
     <p class="my-fleet-hint">The optimizer will keep these ships and suggest what to <strong>add</strong> within your remaining budget.</p>
   </fieldset>
 
@@ -65,6 +82,23 @@
       <label>Large Cargo<input type="number" name="large_cargo" min="0" value="0"></label>
       <label>Espionage Probe<input type="number" name="espionage_probe" min="0" value="0"></label>
       <label>Reaper<input type="number" name="reaper" min="0" value="0"></label>
+    </div>
+    <div class="preset-row">
+      <label class="preset-label">Preset
+        <select id="enemy-preset-select"><option value="">-- Saved --</option></select>
+      </label>
+      <button type="button" id="enemy-preset-load" class="btn-secondary btn-small">Load</button>
+      <button type="button" id="enemy-preset-save" class="btn-secondary btn-small">Save</button>
+      <button type="button" id="enemy-preset-delete" class="btn-secondary btn-small">Delete</button>
+      <button type="button" id="enemy-preset-export-txt" class="btn-secondary btn-small">Export TXT</button>
+      <button type="button" id="enemy-preset-export-xml" class="btn-secondary btn-small">Export XML</button>
+      <button type="button" id="enemy-preset-import-toggle" class="btn-secondary btn-small">Import</button>
+    </div>
+    <div id="enemy-import-section" class="import-section hidden">
+      <textarea id="enemy-import-textarea" rows="6" placeholder="Paste fleet (TXT or XML)..."></textarea>
+      <button type="button" id="enemy-import-confirm" class="btn-primary btn-small">Import</button>
+      <button type="button" id="enemy-import-cancel" class="btn-secondary btn-small">Cancel</button>
+      <span id="enemy-import-status" class="parse-status"></span>
     </div>
   </fieldset>
 
@@ -270,5 +304,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/app.js?v=20260702a"></script>
+<script src="/static/app.js?v=20260702b"></script>
 {% endblock %}

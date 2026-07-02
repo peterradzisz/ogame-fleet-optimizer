@@ -740,4 +740,287 @@ if (parseBtn) {
   window.copyFleetTable = copyFleetTable;
   window.copyDefenderTable = copyDefenderTable;
 
+  // ============================================================
+  // Fleet Presets: localStorage save/load + TXT/XML export/import
+  // ============================================================
+
+  // Reverse name map: ship_key -> display name (e.g. "light_fighter" -> "light fighter")
+  var KEY_TO_DISPLAY = {};
+  for (var dn in SHIP_NAME_MAP) { KEY_TO_DISPLAY[SHIP_NAME_MAP[dn]] = dn; }
+  var DEF_KEY_TO_DISPLAY = {};
+  for (var dn2 in DEFENSE_NAME_MAP) { DEF_KEY_TO_DISPLAY[DEFENSE_NAME_MAP[dn2]] = dn2; }
+
+  function getPresets(storageKey) {
+    try {
+      var raw = localStorage.getItem(storageKey);
+      return raw ? JSON.parse(raw) : {};
+    } catch (e) { return {}; }
+  }
+
+  function savePresetToStorage(storageKey, name, data) {
+    var presets = getPresets(storageKey);
+    presets[name] = data;
+    localStorage.setItem(storageKey, JSON.stringify(presets));
+  }
+
+    function deletePresetFromStorage(storageKey, name) {
+    var presets = getPresets(storageKey);
+    delete presets[name];
+    localStorage.setItem(storageKey, JSON.stringify(presets));
+  }
+
+  function populatePresetDropdown(selectEl, storageKey) {
+    var presets = getPresets(storageKey);
+    var keys = Object.keys(presets).sort();
+    selectEl.innerHTML = '<option value="">-- Saved (' + keys.length + ') --</option>';
+    for (var i = 0; i < keys.length; i++) {
+      var name = keys[i];
+      var data = presets[name];
+      var types = data.ships ? Object.keys(data.ships).length : 0;
+      var opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = name + " (" + types + " types)";
+      selectEl.appendChild(opt);
+    }
+  }
+
+  // --- Export formats ---
+  function exportFleetAsTxt(ships) {
+    var lines = [];
+    var keys = Object.keys(ships).filter(function(k) { return ships[k] > 0; }).sort();
+    for (var i = 0; i < keys.length; i++) {
+      var name = KEY_TO_DISPLAY[keys[i]] || keys[i];
+      lines.push(name.charAt(0).toUpperCase() + name.slice(1) + "\n" + ships[keys[i]].toLocaleString());
+    }
+    return lines.join("\n");
+  }
+
+  function exportFleetAsXml(name, ships) {
+    var keys = Object.keys(ships).filter(function(k) { return ships[k] > 0; }).sort();
+    var lines = ['<?xml version="1.0" encoding="UTF-8"?>',
+                 '<fleetPreset name="' + (name || "preset").replace(/"/g, "&quot;") + '" timestamp="' + new Date().toISOString() + '">',
+                 "  <ships>"];
+    for (var i = 0; i < keys.length; i++) {
+      lines.push('    <ship key="' + keys[i] + '" count="' + ships[keys[i]] + '"/>');
+    }
+    lines.push("  </ships>");
+    lines.push("</fleetPreset>");
+    return lines.join("\n");
+  }
+
+  // --- Import with auto-detect (TXT or XML) ---
+  function importFleetAuto(text, nameMap) {
+    var trimmed = text.trim();
+    if (!trimmed) return {};
+    // Auto-detect XML
+    if (trimmed.indexOf("<fleetPreset") >= 0 || trimmed.indexOf("<ship ") >= 0) {
+      return importFleetFromXml(trimmed);
+    }
+    // Fallback to TXT (reuse existing parser)
+    var r = parseOGameReport(trimmed, nameMap, UNSUPPORTED);
+    return r.parsed;
+  }
+
+  function importFleetFromXml(text) {
+    var ships = {};
+    var re = /<ship\s+key="([^"]+)"\s+count="(\d+)"\s*\/>/g;
+    var m;
+    while ((m = re.exec(text)) !== null) {
+      var key = m[1];
+      var count = parseInt(m[2], 10);
+      if (count > 0) ships[key] = count;
+    }
+    return ships;
+  }
+
+  // --- Fill form inputs from fleet dict ---
+  function fillFormInputs(ships, prefix) {
+    // Zero out existing inputs first
+    var pattern = prefix ? 'input[name^="' + prefix + '"]' : 'input[name]:not([name^="my_"]):not([name^="exclude"])';
+    var inputs = document.querySelectorAll(pattern);
+    for (var i = 0; i < inputs.length; i++) {
+      var name = inputs[i].name;
+      if (prefix) name = name.replace(prefix, "");
+      if (name in SHIP_NAME_MAP || Object.values(SHIP_NAME_MAP).indexOf(name) >= 0) {
+        inputs[i].value = "0";
+      }
+    }
+    // Fill from ships
+    for (var k in ships) {
+      var sel = prefix ? 'input[name="' + prefix + k + '"]' : 'input[name="' + k + '"]';
+      var el = document.querySelector(sel);
+      if (el) el.value = ships[k];
+    }
+  }
+
+  // --- Read fleet from form inputs ---
+  function readFormFleet(prefix) {
+    var fleet = {};
+    var keys = prefix ? Object.values(SHIP_NAME_MAP) : SHIP_KEYS;
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      var name = prefix ? prefix + k : k;
+      var el = document.querySelector('input[name="' + name + '"]');
+      if (el) {
+        var v = parseInt(el.value || "0", 10);
+        if (v > 0) fleet[k] = v;
+      }
+    }
+    return fleet;
+  }
+
+  // ============================================================
+  // Wire up preset controls for both My Fleet and Enemy Fleet
+  // ============================================================
+
+  function setupPresetControls(config) {
+    var storageKey = config.storageKey;
+    var prefix = config.prefix; // "my_" or ""
+    var selectEl = document.getElementById(config.selectId);
+    var loadBtn = document.getElementById(config.loadId);
+    var saveBtn = document.getElementById(config.saveId);
+    var delBtn = document.getElementById(config.delId);
+    var exportTxtBtn = document.getElementById(config.exportTxtId);
+    var exportXmlBtn = document.getElementById(config.exportXmlId);
+    var importToggleBtn = document.getElementById(config.importToggleId);
+    var importSection = document.getElementById(config.importSectionId);
+    var importTextarea = document.getElementById(config.importTextareaId);
+    var importConfirm = document.getElementById(config.importConfirmId);
+    var importCancel = document.getElementById(config.importCancelId);
+    var importStatus = document.getElementById(config.importStatusId);
+
+    if (!selectEl) return;
+    populatePresetDropdown(selectEl, storageKey);
+
+    if (loadBtn) {
+      loadBtn.addEventListener("click", function() {
+        var name = selectEl.value;
+        if (!name) { showToast("Select a preset first"); return; }
+        var presets = getPresets(storageKey);
+        var data = presets[name];
+        if (!data || !data.ships) { showToast("Preset not found"); return; }
+        fillFormInputs(data.ships, prefix);
+        showToast("Loaded: " + name);
+      });
+    }
+
+    if (saveBtn) {
+      saveBtn.addEventListener("click", function() {
+        var name = prompt("Name this preset:");
+        if (!name) return;
+        name = name.trim();
+        if (!name) return;
+        var fleet = readFormFleet(prefix);
+        if (Object.keys(fleet).length === 0) {
+          showToast("No ships to save"); return;
+        }
+        var data = { ships: fleet, saved_at: new Date().toISOString() };
+        savePresetToStorage(storageKey, name, data);
+        populatePresetDropdown(selectEl, storageKey);
+        selectEl.value = name;
+        showToast("Saved: " + name);
+      });
+    }
+
+    if (delBtn) {
+      delBtn.addEventListener("click", function() {
+        var name = selectEl.value;
+        if (!name) { showToast("Select a preset first"); return; }
+        if (!confirm("Delete preset \"" + name + "\"?")) return;
+        deletePresetFromStorage(storageKey, name);
+        populatePresetDropdown(selectEl, storageKey);
+        showToast("Deleted: " + name);
+      });
+    }
+
+    function doExport(format) {
+      var fleet = readFormFleet(prefix);
+      if (Object.keys(fleet).length === 0) {
+        showToast("Nothing to export"); return;
+      }
+      var name = selectEl.value || "fleet";
+      var text = format === "xml" ? exportFleetAsXml(name, fleet) : exportFleetAsTxt(fleet);
+      copyToClipboard(text);
+    }
+
+    if (exportTxtBtn) exportTxtBtn.addEventListener("click", function() { doExport("txt"); });
+    if (exportXmlBtn) exportXmlBtn.addEventListener("click", function() { doExport("xml"); });
+
+    if (importToggleBtn) {
+      importToggleBtn.addEventListener("click", function() {
+        if (importSection) importSection.classList.toggle("hidden");
+        if (importTextarea && !importSection.classList.contains("hidden")) {
+          importTextarea.value = "";
+          importTextarea.focus();
+        }
+        if (importStatus) { importStatus.textContent = ""; importStatus.className = "parse-status"; }
+      });
+    }
+
+    if (importCancel) {
+      importCancel.addEventListener("click", function() {
+        if (importSection) importSection.classList.add("hidden");
+        if (importTextarea) importTextarea.value = "";
+        if (importStatus) { importStatus.textContent = ""; importStatus.className = "parse-status"; }
+      });
+    }
+
+    if (importConfirm) {
+      importConfirm.addEventListener("click", function() {
+        var text = importTextarea ? importTextarea.value : "";
+        if (!text.trim()) {
+          if (importStatus) { importStatus.textContent = "Nothing to import."; importStatus.className = "parse-status parse-warning"; }
+          return;
+        }
+        var nameMap = prefix ? SHIP_NAME_MAP : SHIP_NAME_MAP;
+        var parsed = importFleetAuto(text, nameMap);
+        var count = Object.keys(parsed).length;
+        if (count === 0) {
+          if (importStatus) { importStatus.textContent = "No ships found in pasted text."; importStatus.className = "parse-status parse-warning"; }
+          return;
+        }
+        fillFormInputs(parsed, prefix);
+        if (importStatus) { importStatus.textContent = "Imported " + count + " types."; importStatus.className = "parse-status parse-ok"; }
+        if (importSection) importSection.classList.add("hidden");
+        showToast("Imported " + count + " types");
+      });
+    }
+  }
+
+  // Wire up My Fleet presets
+  setupPresetControls({
+    storageKey: "ogame_optimizer_presets_my_fleet",
+    prefix: "my_",
+    selectId: "my-preset-select",
+    loadId: "my-preset-load",
+    saveId: "my-preset-save",
+    delId: "my-preset-delete",
+    exportTxtId: "my-preset-export-txt",
+    exportXmlId: "my-preset-export-xml",
+    importToggleId: "my-preset-import-toggle",
+    importSectionId: "my-import-section",
+    importTextareaId: "my-import-textarea",
+    importConfirmId: "my-import-confirm",
+    importCancelId: "my-import-cancel",
+    importStatusId: "my-import-status",
+  });
+
+  // Wire up Enemy Fleet presets
+  setupPresetControls({
+    storageKey: "ogame_optimizer_presets_enemy_fleet",
+    prefix: "",
+    selectId: "enemy-preset-select",
+    loadId: "enemy-preset-load",
+    saveId: "enemy-preset-save",
+    delId: "enemy-preset-delete",
+    exportTxtId: "enemy-preset-export-txt",
+    exportXmlId: "enemy-preset-export-xml",
+    importToggleId: "enemy-preset-import-toggle",
+    importSectionId: "enemy-import-section",
+    importTextareaId: "enemy-import-textarea",
+    importConfirmId: "enemy-import-confirm",
+    importCancelId: "enemy-import-cancel",
+    importStatusId: "enemy-import-status",
+  });
+
 })();
