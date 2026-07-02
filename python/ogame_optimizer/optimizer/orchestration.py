@@ -386,10 +386,13 @@ def optimize(
               resource_weights[0], resource_weights[1], resource_weights[2], preference_beta)
     _validate_inputs(enemy_fleet, enemy_defenses, budget)
 
-    # --- base_fleet mode: the player has an existing fleet and wants to know
-    # what to BUILD on top of it. The GA optimises additions only; the base
-    # is merged into every combat evaluation. Budget for additions =
-    # total_budget - base_cost.
+    # --- base_fleet mode: the player has an existing fleet (locked, always
+    # fielded) and wants to know what to BUILD on top of it. The GA
+    # optimises additions only; the base is merged into every combat
+    # evaluation. The budget_multiplier directly controls the ADDITIONS
+    # budget (= enemy_value * multiplier), independent of base cost.
+    # So 1.0x = "build up to enemy_value of new ships", 2.0x = "build up
+    # to 2x enemy_value", 0.0x = "don't add anything, just evaluate base".
     base_cost = 0
     base_count = 0
     if base_fleet:
@@ -397,9 +400,10 @@ def optimize(
         base_cost = _fv_base(base_fleet)
         base_count = sum(base_fleet.values())
         _log.info("Base fleet: cost=%d count=%d ships", base_cost, base_count)
-    _ga_budget = max(0, budget - base_cost) if base_fleet else budget
+    _ga_budget = budget  # multiplier * enemy_value, independent of base
     if base_fleet:
-        _log.info("Additional budget for GA: %d (total=%d - base=%d)", _ga_budget, budget, base_cost)
+        _log.info("Additions budget: %d (multiplier*enemy_value); base: %d ships for %d res",
+                  _ga_budget, base_count, base_cost)
 
     # Phase A: greedy (or use provided seed_fleet for refinement)
     if seed_fleet:
@@ -626,15 +630,30 @@ def optimize(
     t2 = time.time()
     _log.info("Phase B done in %.2fs: best_loss=%.0f", t2 - t1, global_best_loss)
 
-    # Strict budget enforcement: proportional scale if over
+    # Strict budget enforcement: proportional scale if over.
+    # In base_fleet mode, ONLY the additions are scaled — the base fleet is a
+    # sunk cost (player already built it) and must be preserved as-is.
     from ogame_optimizer.core.fleet import fleet_value as _fv
-    _fleet_val = _fv(ga_result.best_fleet)
-    if _fleet_val > budget and _fleet_val > 0:
-        _log.warning("Fleet over budget: %d > %d, scaling down", _fleet_val, budget)
-        scale = budget / _fleet_val
-        _fleet = {k: max(0, int(v * scale)) for k, v in ga_result.best_fleet.items() if int(v * scale) > 0}
-        ga_result.best_fleet = _fleet
-        _log.info("Budget scaled to: %d", _fv(ga_result.best_fleet))
+    if base_fleet:
+        _additions = {s: max(0, ga_result.best_fleet.get(s, 0) - base_fleet.get(s, 0))
+                      for s in ga_result.best_fleet}
+        _add_cost = _fv(_additions)
+        if _add_cost > _ga_budget and _add_cost > 0:
+            _log.warning("Additions over budget: %d > %d, scaling down (base preserved)", _add_cost, _ga_budget)
+            _scale = _ga_budget / _add_cost
+            _additions = {k: max(0, int(v * _scale)) for k, v in _additions.items() if int(v * _scale) > 0}
+            ga_result.best_fleet = _merge_fleet(base_fleet, _additions)
+            _log.info("Additions scaled to: %d (base preserved at %d)", _fv(_additions), base_cost)
+        else:
+            _log.info("Additions within budget: %d <= %d (base preserved)", _add_cost, _ga_budget)
+    else:
+        _fleet_val = _fv(ga_result.best_fleet)
+        if _fleet_val > budget and _fleet_val > 0:
+            _log.warning("Fleet over budget: %d > %d, scaling down", _fleet_val, budget)
+            scale = budget / _fleet_val
+            _fleet = {k: max(0, int(v * scale)) for k, v in ga_result.best_fleet.items() if int(v * scale) > 0}
+            ga_result.best_fleet = _fleet
+            _log.info("Budget scaled to: %d", _fv(ga_result.best_fleet))
 
     # Phase C: Prune dead-weight ships and refine from the cleaned fleet.
     # The GA explores incrementally and can't reliably wholesale-eliminate a
