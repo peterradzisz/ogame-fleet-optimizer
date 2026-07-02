@@ -134,6 +134,11 @@
       if (payload.budget_multiplier === 0 && activeTab === 'myfleet' && Object.keys(myFleetCheck).length === 0) {
         throw new Error('0.0X requires ships in the My Fleet section. Enter your fleet first.');
       }
+      // Send base_fleet when on myfleet tab (not just 0.0x)
+      if (activeTab === 'myfleet' && Object.keys(myFleetCheck).length > 0) {
+        payload.base_fleet = myFleetCheck;
+        console.log('DIAG SET payload.base_fleet with', Object.keys(myFleetCheck).length, 'ships');
+      }
       console.log('POST /api/optimize payload:', payload);
       console.log("DIAG activeTab:", activeTab);
       console.log("DIAG base_fleet in payload:", payload.base_fleet);
