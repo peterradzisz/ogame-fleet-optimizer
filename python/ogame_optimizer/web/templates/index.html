@@ -279,7 +279,7 @@
   <div id="metrics"></div>
   <div class="fleet-tables">
     <div class="fleet-table-col">
-      <h3>Recommended Fleet <span class="copy-btns"><button type="button" class="copy-btn" onclick="copyFleetTable('text')">📋 Text</button><button type="button" class="copy-btn" onclick="copyFleetTable('html')">📋 HTML</button></span></h3>
+      <h3>Recommended Fleet <span class="copy-btns"><button type="button" class="copy-btn" onclick="copyFleetTable('text')">📋 Text</button><button type="button" class="copy-btn" onclick="copyFleetTable('html')">📋 HTML</button><button type="button" class="copy-btn" onclick="copyFleetOGame()">📋 OGame</button></span></h3>
       <div id="fleet-legend" class="fleet-legend hidden">
         <span class="fleet-legend-item"><span class="fleet-legend-dot critical"></span> Critical — removing increases losses significantly</span>
         <span class="fleet-legend-item"><span class="fleet-legend-dot deadweight"></span> Dead weight — fleet performs better without it</span>
@@ -291,8 +291,9 @@
       </table>
     </div>
     <div class="fleet-table-col">
-      <h3>Defender Fleet (Enemy) <span class="copy-btns"><button type="button" class="copy-btn" onclick="copyDefenderTable('text')">📋 Text</button><button type="button" class="copy-btn" onclick="copyDefenderTable('html')">📋 HTML</button></span></h3>
+      <h3>Defender Fleet (Enemy) <span class="copy-btns"><button type="button" class="copy-btn" onclick="copyDefenderTable('text')">📋 Text</button><button type="button" class="copy-btn" onclick="copyDefenderTable('html')">📋 HTML</button><button type="button" class="copy-btn" onclick="copyDefenderOGame()">📋 OGame</button></span></h3>
       <div id="defender-fleet-summary" class="defender-summary"></div>
+      <div id="enemy-defenses-summary" class="defenses-summary"></div>
       <table id="defender-fleet-table">
         <thead><tr><th>Ship</th><th>Count</th><th>Cost %</th><th>Surviving (after 6 rounds)</th></tr></thead>
         <tbody></tbody>
@@ -304,5 +305,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/app.js?v=20260702b"></script>
+<script src="/static/app.js?v=20260702c"></script>
 {% endblock %}

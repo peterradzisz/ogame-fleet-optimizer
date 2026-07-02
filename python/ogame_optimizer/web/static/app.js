@@ -1,6 +1,7 @@
 // OGame Fleet Optimizer - app.js v20260622d
 (function() {
   let lastResult = null;
+  let lastRequest = null;
   let refineCount = 0;
   let activeTab = "counter"; // "counter" or "myfleet"
 
@@ -126,6 +127,7 @@
       };
 
       console.log("POST /api/optimize payload:", payload);
+      lastRequest = payload;
       var resp = await fetch("/api/optimize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -383,6 +385,7 @@
       else legend.classList.add("hidden");
     }
 
+    renderEnemyDefenses();
     results.classList.remove("hidden");
     lastResult = data;
     if (refineBtn) refineBtn.disabled = false;
@@ -736,9 +739,76 @@ if (parseBtn) {
   }
 
 
+  // ---- Copy fleet in OGame paste format (Ship / Count per line) ----
+  function copyFleetOGame() {
+    if (!lastResult) return;
+    var fleet = lastResult.recommended_fleet || {};
+    var lines = [];
+    var keys = Object.keys(fleet).filter(function(k) { return fleet[k] > 0; }).sort();
+    for (var i = 0; i < keys.length; i++) {
+      var name = KEY_TO_DISPLAY ? (KEY_TO_DISPLAY[keys[i]] || keys[i]) : keys[i];
+      name = name.charAt(0).toUpperCase() + name.slice(1);
+      lines.push(name + "\n" + fleet[keys[i]].toLocaleString());
+    }
+    copyToClipboard(lines.join("\n"));
+  }
+
+  function copyDefenderOGame() {
+    if (!lastResult) return;
+    var defAnalysis = lastResult.defender_fleet_analysis || {};
+    var lines = [];
+    // Enemy ships
+    var shipKeys = Object.keys(defAnalysis).sort();
+    for (var i = 0; i < shipKeys.length; i++) {
+      var info = defAnalysis[shipKeys[i]];
+      var cnt = info.count || 0;
+      if (cnt > 0) {
+        var name = (KEY_TO_DISPLAY ? (KEY_TO_DISPLAY[shipKeys[i]] || shipKeys[i]) : shipKeys[i]);
+        name = name.charAt(0).toUpperCase() + name.slice(1);
+        lines.push(name + "\n" + cnt.toLocaleString());
+      }
+    }
+    // Enemy defenses (from lastRequest)
+    if (lastRequest && lastRequest.enemy_defenses && lastRequest.enemy_defenses.defenses) {
+      var defenses = lastRequest.enemy_defenses.defenses;
+      var defKeys = Object.keys(defenses).filter(function(k) { return defenses[k] > 0; }).sort();
+      for (var d = 0; d < defKeys.length; d++) {
+        var dname = (DEF_KEY_TO_DISPLAY ? (DEF_KEY_TO_DISPLAY[defKeys[d]] || defKeys[d]) : defKeys[d]);
+        dname = dname.charAt(0).toUpperCase() + dname.slice(1);
+        lines.push(dname + "\n" + defenses[defKeys[d]].toLocaleString());
+      }
+    }
+    if (lines.length > 0) copyToClipboard(lines.join("\n"));
+  }
+
+  // ---- Render enemy defenses summary in results ----
+  function renderEnemyDefenses() {
+    var container = document.getElementById("enemy-defenses-summary");
+    if (!container) return;
+    if (!lastRequest || !lastRequest.enemy_defenses || !lastRequest.enemy_defenses.defenses) {
+      container.innerHTML = "";
+      return;
+    }
+    var defenses = lastRequest.enemy_defenses.defenses;
+    var keys = Object.keys(defenses).filter(function(k) { return defenses[k] > 0; }).sort();
+    if (keys.length === 0) {
+      container.innerHTML = "";
+      return;
+    }
+    var parts = [];
+    for (var i = 0; i < keys.length; i++) {
+      var name = (DEF_KEY_TO_DISPLAY ? (DEF_KEY_TO_DISPLAY[keys[i]] || keys[i]) : keys[i]);
+      name = name.charAt(0).toUpperCase() + name.slice(1);
+      parts.push(name + ": " + defenses[keys[i]].toLocaleString());
+    }
+    container.innerHTML = '<span class="defenses-summary-label">Enemy Defenses:</span> ' + parts.join(" | ");
+  }
+
   // Expose copy functions to global scope for inline onclick handlers
   window.copyFleetTable = copyFleetTable;
   window.copyDefenderTable = copyDefenderTable;
+  window.copyFleetOGame = copyFleetOGame;
+  window.copyDefenderOGame = copyDefenderOGame;
 
   // ============================================================
   // Fleet Presets: localStorage save/load + TXT/XML export/import
