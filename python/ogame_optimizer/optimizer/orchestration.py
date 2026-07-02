@@ -10,7 +10,7 @@ from typing import Dict, List, Optional
 
 from ogame_optimizer.logging_config import get_logger
 from ogame_optimizer.core.combat import simulate_batch
-from ogame_optimizer.core.fleet import compute_budget, SHIPS_COST, weighted_fleet_value, resource_preference_penalty
+from ogame_optimizer.core.fleet import compute_budget, SHIPS_COST, weighted_fleet_value, resource_preference_penalty, fleet_value
 from ogame_optimizer.optimizer.greedy import greedy_optimize
 from ogame_optimizer.optimizer.genetic import genetic_optimize, _drift_bounds_for_seed
 
