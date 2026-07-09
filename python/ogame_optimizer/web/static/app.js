@@ -502,9 +502,7 @@ if (parseBtn) {
     // Split at "Defence" / "Defenses" / "Defense" section header
     var fleetText = ft;
     var defText = dt;
-    var combinedRegex = /
-\s*(defen[cs]es?)\s*
-/i;
+    var combinedRegex = /\s*(defen[cs]es?)\s*/i;
     var ftMatch = ft.match(combinedRegex);
     if (ftMatch && !dt.trim()) {
       // User pasted combined report into Fleet field only
