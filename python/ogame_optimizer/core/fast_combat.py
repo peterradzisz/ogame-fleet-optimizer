@@ -439,7 +439,7 @@ def _fire(attacker_side: dict, defender_side: dict, rng: random.Random):
                 p_explode = ((0.7 - damaged_ratio) / 0.7) * (1.0 - damaged_ratio)
                 damaged_survival = damaged_ratio * (1.0 - p_explode)
             else:
-                damaged_survival = damaged_ratio
+                damaged_survival = 1.0  # Above 70% hull: ALL survive, no hull-depletion deaths
             survival_frac = (1.0 - frac_hit) + frac_hit * damaged_survival
             hull_factor = (1.0 - frac_hit) + frac_hit * damaged_survival * damaged_ratio
         elif frac_hit >= 0.999:
@@ -447,12 +447,13 @@ def _fire(attacker_side: dict, defender_side: dict, rng: random.Random):
             if hull_ratio < 0.7:
                 p_explode = ((0.7 - hull_ratio) / 0.7) * (1.0 - hull_ratio)
                 survival_frac = hull_ratio * (1.0 - p_explode)
+                hull_factor = survival_frac
             else:
-                survival_frac = hull_ratio
-            hull_factor = survival_frac
+                survival_frac = 1.0  # Above 70%: ALL survive
+                hull_factor = hull_ratio  # But hull is still damaged
         else:
-            # Almost no hits - no explosions
-            survival_frac = hull_ratio
+            # Almost no hits - no explosions, all survive
+            survival_frac = 1.0
             hull_factor = hull_ratio
 
         survival_frac = min(1.0, survival_frac)
