@@ -455,13 +455,14 @@ var SHIP_NAME_MAP = {
   "bomber": "bomber", "destroyer": "destroyer", "deathstar": "deathstar",
   "small cargo": "small_cargo", "large cargo": "large_cargo", "espionage probe": "espionage_probe",
   "pathfinder": "pathfinder", "recycler": "recycler", "reaper": "reaper",
+  "solar satellite": "solar_satellite", "crawler": "crawler",
 };
 var DEFENSE_NAME_MAP = {
   "rocket launcher": "rocket_launcher", "light laser": "light_laser", "heavy laser": "heavy_laser",
   "gauss cannon": "gauss_cannon", "ion cannon": "ion_cannon", "plasma turret": "plasma_turret",
   "small shield dome": "small_shield_dome", "large shield dome": "large_shield_dome",
 };
-var UNSUPPORTED = ["crawler", "interceptor", "ion bomber"];
+var UNSUPPORTED = ["interceptor", "ion bomber", "anti-ballistic missiles", "anti-ballistic missile", "interplanetary missiles", "interplanetary missile"];
 
 function parseOGameReport(text, nameMap, unsupportedList) {
   var result = { parsed: {}, unknown: [], unsupported: [] };
@@ -497,17 +498,32 @@ if (parseBtn) {
     var ft = document.getElementById("paste-fleet").value;
     var dt = document.getElementById("paste-defenses").value;
     var msgs = [];
-    if (ft.trim()) {
-      var r = parseOGameReport(ft, SHIP_NAME_MAP, UNSUPPORTED);
+    // Handle combined spy reports pasted into Fleet textarea
+    // Split at "Defence" / "Defenses" / "Defense" section header
+    var fleetText = ft;
+    var defText = dt;
+    var combinedRegex = /
+\s*(defen[cs]es?)\s*
+/i;
+    var ftMatch = ft.match(combinedRegex);
+    if (ftMatch && !dt.trim()) {
+      // User pasted combined report into Fleet field only
+      var splitIdx = ft.indexOf(ftMatch[0]);
+      fleetText = ft.substring(0, splitIdx);
+      defText = ft.substring(splitIdx + ftMatch[0].length);
+    }
+    if (fleetText.trim()) {
+      var r = parseOGameReport(fleetText, SHIP_NAME_MAP, UNSUPPORTED);
       fillForm(r.parsed, "");
       msgs.push("Fleet: " + Object.keys(r.parsed).length + " types parsed");
       if (r.unsupported.length) msgs.push("Skipped (unsupported): " + r.unsupported.join(", "));
       if (r.unknown.length) msgs.push("Unknown: " + r.unknown.join(", "));
     }
-    if (dt.trim()) {
-      var r2 = parseOGameReport(dt, DEFENSE_NAME_MAP, []);
+    if (defText.trim()) {
+      var r2 = parseOGameReport(defText, DEFENSE_NAME_MAP, ["anti-ballistic missiles", "anti-ballistic missile", "interplanetary missiles", "interplanetary missile"]);
       fillForm(r2.parsed, "");
       msgs.push("Defenses: " + Object.keys(r2.parsed).length + " types parsed");
+      if (r2.unsupported.length) msgs.push("Skipped (unsupported): " + r2.unsupported.join(", "));
       if (r2.unknown.length) msgs.push("Unknown defenses: " + r2.unknown.join(", "));
     }
     if (!msgs.length) { sb.textContent = "Nothing to parse. Paste data first."; sb.classList.add("parse-warning"); }
