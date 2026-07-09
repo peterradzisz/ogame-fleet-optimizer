@@ -245,6 +245,7 @@ def _make_side(fleet: Dict[str, int], defenses: Dict[str, int], tech: Tuple[int,
                 "base_shield": s["shield"] * shield_mult,
                 "unit_hull": s["hull"] * hull_mult,  # FIXED: hull stat is already armor (structure/10)
                 "atk": s["atk"] * atk_mult,
+                "hits": 0.0,
             }
     for k, v in defenses.items():
         if v > 0 and k in DEFENSE_STATS:
@@ -256,6 +257,7 @@ def _make_side(fleet: Dict[str, int], defenses: Dict[str, int], tech: Tuple[int,
                 "base_shield": s["shield"] * shield_mult,
                 "unit_hull": s["hull"] * hull_mult,  # FIXED: hull stat is already armor (structure/10)
                 "atk": s["atk"] * atk_mult,
+                "hits": 0.0,
             }
     return side
 
@@ -351,6 +353,7 @@ def _fire(attacker_side: dict, defender_side: dict, rng: random.Random):
 
         spike_kills = 0.0   # shots that each obliterate one whole unit
         chip_dmg = 0.0      # accumulated sub-lethal damage
+        hull_hits = 0.0     # hull-damaging hits only (for damage distribution)
 
         for k_atk, pair_info in atk_info.items():
             if k_def not in pair_info:
@@ -377,6 +380,7 @@ def _fire(attacker_side: dict, defender_side: dict, rng: random.Random):
             d["count"] = 0
             d["hull"] = 0
             d["shields"] = 0
+            d["hits"] = 0.0
             continue
 
         # Apply chip damage to the survivors' pooled shield, then hull.
@@ -386,8 +390,15 @@ def _fire(attacker_side: dict, defender_side: dict, rng: random.Random):
             shield_pool = unit_shield * survivors
             absorbed = min(chip_dmg, shield_pool)
             hull_dmg = chip_dmg - absorbed
+            # Hull hits = how many shots got through shields to damage hull
+            if chip_dmg > 0 and hull_dmg > 0:
+                avg_dmg_per_chip = chip_dmg / survivors
+                hull_hits = hull_dmg / avg_dmg_per_chip if avg_dmg_per_chip > 0 else 0.0
+            else:
+                hull_hits = 0.0
         else:
             hull_dmg = 0.0
+            hull_hits = 0.0
 
         # Start from accumulated hull (d["hull"]), adjusted for spike kills
         # (spike kills remove whole units, reducing hull proportionally).
@@ -396,29 +407,68 @@ def _fire(attacker_side: dict, defender_side: dict, rng: random.Random):
             d["count"] = 0
             d["hull"] = 0
             d["shields"] = 0
+            d["hits"] = 0.0
             continue
 
         max_hull = unit_hull * survivors
-        hull_ratio = hull_pool / max_hull if max_hull > 0 else 0.0
-        # OGame 70% explosion rule: ships below 70% hull with shields down
-        # have P(explode) proportional to damage taken.
-        if hull_ratio < 0.7:
-            p_explode = ((0.7 - hull_ratio) / 0.7) * (1.0 - hull_ratio)
-            survival_frac = hull_ratio * (1.0 - p_explode)
+        hull_ratio = min(1.0, hull_pool / max_hull) if max_hull > 0 else 0.0
+
+        # === Damage distribution model (replaces uniform-hull assumption) ===
+        # In real OGame, each shot targets a RANDOM individual ship. Some ships
+        # get hit many times and die, others are never targeted and stay at full
+        # HP. The pooled model averages this out: ALL ships appear to have the
+        # same hull ratio. When that average drops below 70%, ALL ships get
+        # explosion rolls - but in reality only the HIT fraction is at risk.
+        #
+        # Fix: estimate the fraction of ships actually hit using accumulated
+        # chip shots. Poisson model: P(ship hit at least once) = 1 - exp(-lambda)
+        # where lambda = shots / ships. Undamaged ships survive at full hull.
+        # Damaged ships carry the explosion risk. Survivors retain higher hull
+        # (explosion selectively removed heavily-damaged ships).
+
+        # Scale previous hits for spike-removed ships, add this round's chip shots
+        prev_hits = d.get("hits", 0.0) * (survivors / count) if count > 0 else 0.0
+        accumulated_shots = prev_hits + hull_hits
+        lambda_hits = accumulated_shots / survivors if survivors > 0 else 0.0
+        frac_hit = 1.0 - math.exp(-min(lambda_hits, 20.0))
+
+        if 0.001 < frac_hit < 0.999:
+            # Split ships into hit and unhit populations
+            damaged_ratio = max(0.0, (hull_ratio - (1.0 - frac_hit)) / frac_hit)
+            if damaged_ratio < 0.7:
+                p_explode = ((0.7 - damaged_ratio) / 0.7) * (1.0 - damaged_ratio)
+                damaged_survival = damaged_ratio * (1.0 - p_explode)
+            else:
+                damaged_survival = damaged_ratio
+            survival_frac = (1.0 - frac_hit) + frac_hit * damaged_survival
+            hull_factor = (1.0 - frac_hit) + frac_hit * damaged_survival * damaged_ratio
+        elif frac_hit >= 0.999:
+            # Nearly all ships hit - original formula
+            if hull_ratio < 0.7:
+                p_explode = ((0.7 - hull_ratio) / 0.7) * (1.0 - hull_ratio)
+                survival_frac = hull_ratio * (1.0 - p_explode)
+            else:
+                survival_frac = hull_ratio
+            hull_factor = survival_frac
         else:
+            # Almost no hits - no explosions
             survival_frac = hull_ratio
+            hull_factor = hull_ratio
+
+        survival_frac = min(1.0, survival_frac)
         new_count = int(survivors * survival_frac)
         d["count"] = new_count
-        # OGame rule: hull damage ACCUMULATES across rounds. Survivors
-        # keep their reduced hull (shields regen to full via _regen_shields,
-        # but hull does NOT heal). Previously hull was reset to full each
-        # round, making defenders far too resilient.
-        if new_count > 0 and survivors > 0:
-            # Per-unit hull stays at hull_pool/survivors level
-            d["hull"] = (hull_pool / survivors) * new_count
+        # Hull accumulation: weighted avg of undamaged (full) + damaged survivors
+        if new_count > 0:
+            d["hull"] = unit_hull * survivors * hull_factor
         else:
             d["hull"] = 0
         d["shields"] = unit_shield * new_count
+        # Update hits with survivorship bias: surviving ships had fewer hits
+        if new_count > 0 and survivors > 0:
+            d["hits"] = accumulated_shots * (new_count / survivors)
+        else:
+            d["hits"] = 0.0
 
 
 def _regen_shields(side: dict):
@@ -467,6 +517,7 @@ def simulate_combat_fast(
             u["count"] = def_start.get(k, {}).get("count", 0)
             u["shields"] = def_start.get(k, {}).get("shields", 0)
             u["hull"] = def_start.get(k, {}).get("hull", 0)
+            u["hits"] = def_start.get(k, {}).get("hits", 0.0)
         # Defender fires at full strength → damages attacker
         _fire(def_side, atk_side, rng)
         # Restore defender to the damaged state (from attacker's fire)
@@ -474,6 +525,7 @@ def simulate_combat_fast(
             u["count"] = def_damaged.get(k, {}).get("count", 0)
             u["shields"] = def_damaged.get(k, {}).get("shields", 0)
             u["hull"] = def_damaged.get(k, {}).get("hull", 0)
+            u["hits"] = def_damaged.get(k, {}).get("hits", 0.0)
 
         # Check for stalemate (no damage either side)
         atk_after = sum(u["count"] for u in atk_side.values())
