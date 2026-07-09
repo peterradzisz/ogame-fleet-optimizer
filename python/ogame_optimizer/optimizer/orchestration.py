@@ -66,6 +66,7 @@ class OptimizationResult:
     recyclers_cost_total: int = 0
     fleet_analysis: Dict[str, Dict[str, float]] = field(default_factory=dict)
     defender_fleet_analysis: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    defender_defense_analysis: Dict[str, Dict[str, float]] = field(default_factory=dict)
     raw_loss_mean: float = 0.0
     # min_gain constraint result
     min_gain_required: float = 0.0
@@ -553,6 +554,14 @@ def optimize(
                 mode=mode,
                 fleet_analysis=_base_sens,
                 defender_fleet_analysis=_def_analysis,
+                defender_defense_analysis={
+                    _d: {
+                        'count': _c,
+                        'surviving_count': round(float(_base_check.get('defender_defense_survivors_mean', {}).get(_d, 0))),
+                        'survival_pct': round(float(_base_check.get('defender_defense_survivors_mean', {}).get(_d, 0)) / _c * 100, 1),
+                    }
+                    for _d, _c in enemy_defenses.items() if _c > 0
+                },
                 base_fleet=dict(base_fleet),
                 base_fleet_cost=base_cost,
                 base_fleet_count=base_count,
@@ -1035,6 +1044,22 @@ def optimize(
     except Exception:
         pass
 
+    # Build defender defense analysis (per-defense survival)
+    defender_defense_analysis: Dict[str, Dict[str, float]] = {}
+    try:
+        _def_def_surv_mean = final.get("defender_defense_survivors_mean", {}) or {}
+        for _def, _count in enemy_defenses.items():
+            if _count > 0:
+                _surv = float(_def_def_surv_mean.get(_def, 0))
+                _surv_pct = round((_surv / _count) * 100, 1)
+                defender_defense_analysis[_def] = {
+                    "count": _count,
+                    "surviving_count": round(_surv),
+                    "survival_pct": _surv_pct,
+                }
+    except Exception:
+        pass
+
     return OptimizationResult(
         recommended_fleet=ga_result.best_fleet,
         fleet_value=_final_fv,
@@ -1077,6 +1102,7 @@ def optimize(
         mode=mode,
         fleet_analysis=fleet_analysis,
         defender_fleet_analysis=defender_fleet_analysis,
+        defender_defense_analysis=defender_defense_analysis,
         base_fleet=base_fleet if base_fleet else {},
         base_fleet_cost=base_cost,
         base_fleet_count=base_count,

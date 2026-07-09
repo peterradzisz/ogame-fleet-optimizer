@@ -169,6 +169,7 @@ def run_optimize(req: OptimizeRequest) -> OptimizeResponse:
             recyclers_cost_total=result.recyclers_cost_total,
             fleet_analysis=result.fleet_analysis,
             defender_fleet_analysis=result.defender_fleet_analysis,
+            defender_defense_analysis=result.defender_defense_analysis,
             resource_weights=list(result.resource_weights),
             preference_beta=result.preference_beta,
             fleet_weighted_value=result.fleet_weighted_value,

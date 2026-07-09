@@ -136,6 +136,7 @@ class OptimizeResponse(BaseModel):
     recyclers_cost_total: int = 0
     fleet_analysis: Dict[str, Dict] = Field(default_factory=dict)
     defender_fleet_analysis: Dict[str, Dict] = Field(default_factory=dict)
+    defender_defense_analysis: Dict[str, Dict] = Field(default_factory=dict)
     resource_weights: List[float] = Field(default_factory=lambda: [2.0, 1.0, 1.0])
     preference_beta: float = 0.05
     fleet_weighted_value: float = 0.0

@@ -538,6 +538,7 @@ def simulate_batch_fast(
     from collections import defaultdict
     atk_surv_sum: dict = defaultdict(float)
     def_surv_sum: dict = defaultdict(float)
+    def_def_surv_sum: dict = defaultdict(float)
 
     for i in range(n_sims):
         r = simulate_combat_fast(
@@ -574,6 +575,8 @@ def simulate_batch_fast(
             atk_surv_sum[_s] += _n
         for _s, _n in (r.get("defender_survivors") or {}).items():
             def_surv_sum[_s] += _n
+        for _s, _n in (r.get("defender_defense_survivors") or {}).items():
+            def_def_surv_sum[_s] += _n
 
         if r["winner"] == "Attacker":
             wins += 1
@@ -603,6 +606,7 @@ def simulate_batch_fast(
         "debris_total": int((debris_metal_sum + debris_crystal_sum + debris_deut_sum) / n_sims) if n_sims > 0 else 0,
         "attacker_survivors_mean": {s: n / n_sims for s, n in atk_surv_sum.items()},
         "defender_survivors_mean": {s: n / n_sims for s, n in def_surv_sum.items()},
+        "defender_defense_survivors_mean": {s: n / n_sims for s, n in def_def_surv_sum.items()},
     }
 
 

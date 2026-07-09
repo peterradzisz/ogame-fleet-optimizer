@@ -277,6 +277,11 @@ def simulate_batch(
         # integer counts or survival percentages as needed.
         result["attacker_survivors_mean"] = {s: n / K for s, n in _atk_surv.items()}
         result["defender_survivors_mean"] = {s: n / K for s, n in _def_surv.items()}
+        # Defense survivors from the detail sim
+        _def_def_surv = {}
+        for ds, dn in (detail.get("defender_defense_survivors") or {}).items():
+            _def_def_surv[ds] = float(dn)
+        result["defender_defense_survivors_mean"] = _def_def_surv
     except Exception:
         result["debris_metal"] = 0
         result["debris_crystal"] = 0
@@ -284,6 +289,7 @@ def simulate_batch(
         result["debris_total"] = 0
         result["attacker_survivors_mean"] = {}
         result["defender_survivors_mean"] = {}
+        result["defender_defense_survivors_mean"] = {}
         result["fleet_value"] = 0
 
     return result

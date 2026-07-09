@@ -401,6 +401,52 @@
       }
     }
 
+    // ---- Defender defenses table ----
+    var defDefTbody = document.querySelector('#defender-defense-table tbody');
+    var defDefSummary = document.getElementById('defender-defense-summary');
+    var defDefTable = document.getElementById('defender-defense-table');
+    var defDefAnalysis = data.defender_defense_analysis || {};
+    var defDefKeys = Object.keys(defDefAnalysis);
+    if (defDefTbody && defDefKeys.length > 0) {
+      defDefTbody.innerHTML = '';
+      if (defDefTable) defDefTable.classList.remove('hidden');
+      defDefKeys.sort(function(a, b) {
+        var ca = (defDefAnalysis[a] && defDefAnalysis[a].count) || 0;
+        var cb = (defDefAnalysis[b] && defDefAnalysis[b].count) || 0;
+        return cb - ca;
+      });
+      var totalDefCount = 0, totalDefSurv = 0;
+      for (var dd = 0; dd < defDefKeys.length; dd++) {
+        var dk = defDefKeys[dd];
+        var dInfo = defDefAnalysis[dk] || {};
+        var dCnt = dInfo.count || 0;
+        var dSurvCnt = dInfo.surviving_count != null ? dInfo.surviving_count : 0;
+        var dSurvPct = dInfo.survival_pct;
+        totalDefCount += dCnt;
+        totalDefSurv += dSurvCnt;
+        var dDestroyed = dCnt - dSurvCnt;
+        var dRow = document.createElement('tr');
+        var dDestroyedClass = (dSurvPct != null && dSurvPct < 5) ? ' class="defender-destroyed"' : '';
+        var dSurvCell = dSurvPct != null
+          ? fmtNum(dSurvCnt) + ' <span style="color:#8b95a7;font-size:0.9em">(' + dSurvPct.toFixed(1) + '%)</span>'
+          : '-';
+        dRow.innerHTML = '<td' + dDestroyedClass + '>' + dk.replace(/_/g, ' ') + '</td>'
+                       + '<td' + dDestroyedClass + '>' + fmtNum(dCnt) + '</td>'
+                       + '<td' + dDestroyedClass + '>' + fmtNum(dDestroyed) + '</td>'
+                       + '<td>' + dSurvCell + '</td>';
+        defDefTbody.appendChild(dRow);
+      }
+      if (defDefSummary) {
+        var totalDefDestroyed = totalDefCount - totalDefSurv;
+        var totalDefPct = totalDefCount > 0 ? (totalDefSurv / totalDefCount * 100).toFixed(1) : '0.0';
+        defDefSummary.textContent = 'Defenses: ' + fmtNum(totalDefCount)
+          + ' total, ' + fmtNum(totalDefDestroyed) + ' destroyed, ' + fmtNum(totalDefSurv) + ' survive (' + totalDefPct + '%)';
+      }
+    } else {
+      if (defDefTable) defDefTable.classList.add('hidden');
+      if (defDefSummary) defDefSummary.textContent = '';
+    }
+
     // Legend: only show when impact analysis is present
     var legend = document.getElementById("fleet-legend");
     if (legend) {
