@@ -4,6 +4,9 @@
   let lastRequest = null;
   let refineCount = 0;
   let useSeedFleet = false;
+  const HISTORY_KEY = "ogame_optimizer_history";
+  const HISTORY_MAX = 6;
+  let historyList = []; // array of saved result snapshots
   let activeTab = "counter"; // "counter" or "myfleet"
 
   const SHIP_KEYS = ["light_fighter","heavy_fighter","cruiser","battleship","battlecruiser","bomber","destroyer","deathstar","small_cargo","large_cargo","espionage_probe","pathfinder","recycler","reaper"];
@@ -408,6 +411,11 @@
     renderEnemyDefenses();
     results.classList.remove("hidden");
     lastResult = data;
+    pushHistory(data);
+    // Auto-scroll to results on first run (or when results were hidden)
+    if (!historyList || historyList.length <= 1) {
+      results.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
     if (refineBtn) refineBtn.disabled = false;
   }
 
@@ -827,6 +835,170 @@ if (parseBtn) {
     }
     container.innerHTML = '<span class="defenses-summary-label">Enemy Defenses:</span> ' + parts.join(" | ");
   }
+
+  // ============================================================
+  // History: store last 6 results in localStorage, render tabs + graph
+  // ============================================================
+  function loadHistory() {
+    try {
+      var raw = localStorage.getItem(HISTORY_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) { return []; }
+  }
+  function saveHistory(list) {
+    try { localStorage.setItem(HISTORY_KEY, JSON.stringify(list)); } catch (e) {}
+  }
+  function snapshotResult(data, idx) {
+    return {
+      ts: Date.now(),
+      label: idx === 0 ? 'latest' : '#' + idx,
+      recommended_fleet: data.recommended_fleet,
+      recommended_additions: data.recommended_additions,
+      base_fleet: data.base_fleet,
+      base_fleet_cost: data.base_fleet_cost,
+      base_fleet_count: data.base_fleet_count,
+      fleet_value: data.fleet_value,
+      fleet_lost_pct: data.fleet_lost_pct,
+      ships_lost_count: data.ships_lost_count,
+      ships_initial_count: data.ships_initial_count,
+      raw_loss_mean: data.raw_loss_mean,
+      expected_loss_mean: data.expected_loss_mean,
+      expected_loss_stddev: data.expected_loss_stddev,
+      win_probability: data.win_probability,
+      confidence_interval_95: data.confidence_interval_95,
+      sims_run_final: data.sims_run_final,
+      debris_metal: data.debris_metal,
+      debris_crystal: data.debris_crystal,
+      debris_deuterium: data.debris_deuterium,
+      debris_total: data.debris_total,
+      net_profit: data.net_profit,
+      net_profit_pct: data.net_profit_pct,
+      recyclers_needed: data.recyclers_needed,
+      recyclers_cost_metal: data.recyclers_cost_metal,
+      recyclers_cost_crystal: data.recyclers_cost_crystal,
+      recyclers_cost_deuterium: data.recyclers_cost_deuterium,
+      recyclers_cost_total: data.recyclers_cost_total,
+      recycler_capacity: data.recycler_capacity,
+      fleet_analysis: data.fleet_analysis,
+      defender_fleet_analysis: data.defender_fleet_analysis,
+      mode: data.mode,
+      seed_used: data.seed_used,
+      time_elapsed_total: data.time_elapsed_total,
+      min_gain_required: data.min_gain_required,
+      min_gain_met: data.min_gain_met,
+      actual_roi_pct: data.actual_roi_pct,
+    };
+  }
+  function pushHistory(data) {
+    var snap = snapshotResult(data, 0);
+    historyList = loadHistory();
+    historyList.unshift(snap);
+    if (historyList.length > HISTORY_MAX) historyList = historyList.slice(0, HISTORY_MAX);
+    for (var i = 0; i < historyList.length; i++) {
+      historyList[i].label = i === 0 ? 'latest' : '#' + i;
+    }
+    saveHistory(historyList);
+    renderHistoryTabs();
+    renderHistoryGraph();
+  }
+  function renderHistoryTabs() {
+    var bar = document.getElementById('history-bar');
+    var tabs = document.getElementById('history-tabs');
+    if (!bar || !tabs) return;
+    if (historyList.length <= 1) {
+      bar.classList.add('hidden');
+      return;
+    }
+    bar.classList.remove('hidden');
+    tabs.innerHTML = '';
+    for (var i = 0; i < historyList.length; i++) {
+      (function(idx) {
+        var snap = historyList[idx];
+        var wp = snap.win_probability || 0;
+        var cls = wp >= 0.95 ? 'win-green' : (wp >= 0.8 ? 'win-yellow' : 'win-red');
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'history-tab' + (idx === 0 ? ' active' : '');
+        var npSign = snap.net_profit >= 0 ? '+' : '';
+        var npM = Math.round(snap.net_profit / 1e6);
+        btn.innerHTML = '<span class="' + cls + '">' + Math.round(wp * 100) + '%</span> ' + npSign + npM + 'M';
+        btn.title = 'Sim #' + idx + ' - ' + new Date(snap.ts).toLocaleTimeString();
+        btn.addEventListener('click', function() {
+          loadHistoryEntry(idx);
+        });
+        tabs.appendChild(btn);
+      })(i);
+    }
+  }
+  function loadHistoryEntry(idx) {
+    var snap = historyList[idx];
+    if (!snap) return;
+    lastResult = snap;
+    renderResults(snap);
+    renderHistoryTabs();
+    var r = document.getElementById('results');
+    if (r) r.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  function renderHistoryGraph() {
+    var container = document.getElementById('history-graph');
+    var svg = document.getElementById('history-svg');
+    if (!container || !svg) return;
+    if (historyList.length < 2) {
+      container.classList.add('hidden');
+      return;
+    }
+    container.classList.remove('hidden');
+    // Oldest first so line goes left-to-right with newest rightmost
+    var pts = historyList.slice().reverse();
+    var n = pts.length;
+    var w = 600, h = 140;
+    var padX = 30, padY = 10;
+    var plotW = w - padX * 2, plotH = h - padY * 2;
+    function range(arr) {
+      var mn = Infinity, mx = -Infinity;
+      for (var i = 0; i < arr.length; i++) {
+        if (arr[i] < mn) mn = arr[i];
+        if (arr[i] > mx) mx = arr[i];
+      }
+      if (mn === mx) { mn -= 1; mx += 1; }
+      return [mn, mx];
+    }
+    var netProfits = pts.map(function(p) { return p.net_profit_pct || 0; });
+    var rawLosses = pts.map(function(p) { return (p.raw_loss_mean || 0) / 1e6; });
+    var shipsLost = pts.map(function(p) {
+      if (p.ships_initial_count && p.ships_initial_count > 0) {
+        return (p.ships_lost_count / p.ships_initial_count) * 100;
+      }
+      return p.fleet_lost_pct || 0;
+    });
+    var r1 = range(netProfits), r2 = range(rawLosses), r3 = range(shipsLost);
+    function normalize(v, r) { return padY + plotH - ((v - r[0]) / (r[1] - r[0])) * plotH; }
+    function xPos(i) { return padX + (n === 1 ? plotW / 2 : (i / (n - 1)) * plotW); }
+    function makePath(arr, r) {
+      var pts2 = [];
+      for (var i = 0; i < arr.length; i++) {
+        pts2.push(xPos(i) + ',' + normalize(arr[i], r));
+      }
+      return 'M' + pts2.join(' L');
+    }
+    var html = '';
+    html += '<line x1="' + padX + '" y1="' + padY + '" x2="' + padX + '" y2="' + (h - padY) + '" stroke="#3a3a5a" stroke-width="1"/>';
+    html += '<line x1="' + padX + '" y1="' + (h - padY) + '" x2="' + (w - padX) + '" y2="' + (h - padY) + '" stroke="#3a3a5a" stroke-width="1"/>';
+    html += '<path d="' + makePath(netProfits, r1) + '" stroke="#4ade80" stroke-width="2" fill="none"/>';
+    html += '<path d="' + makePath(rawLosses, r2) + '" stroke="#f87171" stroke-width="2" fill="none"/>';
+    html += '<path d="' + makePath(shipsLost, r3) + '" stroke="#60a5fa" stroke-width="2" fill="none"/>';
+    for (var i = 0; i < n; i++) {
+      var xp = xPos(i);
+      html += '<circle cx="' + xp + '" cy="' + normalize(netProfits[i], r1) + '" r="3" fill="#4ade80"/>';
+      html += '<circle cx="' + xp + '" cy="' + normalize(rawLosses[i], r2) + '" r="3" fill="#f87171"/>';
+      html += '<circle cx="' + xp + '" cy="' + normalize(shipsLost[i], r3) + '" r="3" fill="#60a5fa"/>';
+    }
+    svg.innerHTML = html;
+  }
+  // Load history on startup
+  historyList = loadHistory();
+  renderHistoryTabs();
+  renderHistoryGraph();
 
   // Expose copy functions to global scope for inline onclick handlers
   window.copyFleetTable = copyFleetTable;

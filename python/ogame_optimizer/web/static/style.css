@@ -348,3 +348,64 @@ textarea:focus { outline: 2px solid #8aa9ff; outline-offset: 1px; }
   font-weight: 600;
   color: #c0c8d8;
 }
+
+/* ---- History tabs and graph ---- */
+.history-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0;
+  flex-wrap: wrap;
+}
+.history-label {
+  font-size: 0.85em;
+  color: #8b95a7;
+}
+#history-tabs {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.history-tab {
+  background: #1a1a2e;
+  border: 1px solid #2a2a4e;
+  color: #c0c8d8;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 0.78em;
+  cursor: pointer;
+  font-family: monospace;
+}
+.history-tab:hover { background: #222244; }
+.history-tab.active {
+  background: #2a2a6e;
+  border-color: #4a4aaa;
+  color: #e0e0f0;
+  font-weight: 600;
+}
+.history-tab .win-green { color: #4ade80; }
+.history-tab .win-red { color: #f87171; }
+.history-tab .win-yellow { color: #fbbf24; }
+
+.history-graph {
+  margin: 8px 0;
+  padding: 6px;
+  background: rgba(42, 42, 78, 0.3);
+  border-radius: 6px;
+}
+.history-graph svg { display: block; }
+.graph-legend {
+  display: flex;
+  gap: 12px;
+  font-size: 0.78em;
+  color: #8b95a7;
+  margin-top: 4px;
+}
+.graph-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: middle;
+}
