@@ -356,7 +356,7 @@ def _fire(attacker_side: dict, defender_side: dict, rng: random.Random):
 
         spike_kills = 0.0   # shots that each obliterate one whole unit
         chip_dmg = 0.0      # accumulated sub-lethal damage
-        hull_hits = 0.0     # hull-damaging hits only (for damage distribution)
+        chip_shots = 0.0    # total chip shots (for per-hit damage estimate)
 
         for k_atk, pair_info in atk_info.items():
             if k_def not in pair_info:
@@ -374,6 +374,7 @@ def _fire(attacker_side: dict, defender_side: dict, rng: random.Random):
             else:
                 # CHIP: pools into shield/hull of the surviving stack.
                 chip_dmg += per_shot * effective_shots
+                chip_shots += effective_shots
 
         # Resolve spike kills. Each consumes one whole unit (its shield AND
         # its hull), so this damage never enters the shared shield pool.
@@ -394,9 +395,9 @@ def _fire(attacker_side: dict, defender_side: dict, rng: random.Random):
             absorbed = min(chip_dmg, shield_pool)
             hull_dmg = chip_dmg - absorbed
             # Hull hits = how many shots got through shields to damage hull
-            if chip_dmg > 0 and hull_dmg > 0:
-                avg_dmg_per_chip = chip_dmg / survivors
-                hull_hits = hull_dmg / avg_dmg_per_chip if avg_dmg_per_chip > 0 else 0.0
+            if chip_shots > 0 and hull_dmg > 0:
+                avg_dmg_per_shot = chip_dmg / chip_shots
+                hull_hits = hull_dmg / avg_dmg_per_shot if avg_dmg_per_shot > 0 else 0.0
             else:
                 hull_hits = 0.0
         else:
