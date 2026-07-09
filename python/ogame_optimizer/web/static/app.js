@@ -3,6 +3,7 @@
   let lastResult = null;
   let lastRequest = null;
   let refineCount = 0;
+  let useSeedFleet = false;
   let activeTab = "counter"; // "counter" or "myfleet"
 
   const SHIP_KEYS = ["light_fighter","heavy_fighter","cruiser","battleship","battlecruiser","bomber","destroyer","deathstar","small_cargo","large_cargo","espionage_probe","pathfinder","recycler","reaper"];
@@ -111,7 +112,7 @@
         ga_time_budget: parseFloat((gaTimeEl||{value:"5"}).value || "5"),
         final_sims: parseInt((finalSimsEl||{value:"500"}).value || "500"),
         exclude_ships: getExcludedShips(),
-        seed_fleet: lastResult ? lastResult.recommended_fleet : null,
+        seed_fleet: (useSeedFleet && lastResult) ? lastResult.recommended_fleet : null,
         debris_pct: parseFloat((document.getElementById('debris_pct')||{value:'0.30'}).value || '0.30'),
         deuterium_in_debris: document.getElementById('deut_in_debris') ? document.getElementById('deut_in_debris').checked : false,
         optimization_target: (document.getElementById('optimization_target')||{value:'maximize_profit'}).value || 'maximize_profit',
@@ -170,6 +171,7 @@
     } finally {
       btn.disabled = false;
       spinner.classList.add("hidden");
+      useSeedFleet = false;
     }
   });
 
@@ -428,6 +430,7 @@
     refineBtn.addEventListener("click", function() {
       if (!lastResult) return;
       refineCount++;
+      useSeedFleet = true;
       var info = document.getElementById("refine-info");
       if (info) {
         info.textContent = "Refinement #" + refineCount + " - iterating from previous best fleet";
