@@ -498,31 +498,37 @@ if (parseBtn) {
     var ft = document.getElementById("paste-fleet").value;
     var dt = document.getElementById("paste-defenses").value;
     var msgs = [];
-    // Handle combined spy reports pasted into Fleet textarea
-    // Split at "Defence" / "Defenses" / "Defense" section header
-    var fleetText = ft;
-    var defText = dt;
-    var combinedRegex = /\s*(defen[cs]es?)\s*/i;
-    var ftMatch = ft.match(combinedRegex);
-    if (ftMatch && !dt.trim()) {
-      // User pasted combined report into Fleet field only
-      var splitIdx = ft.indexOf(ftMatch[0]);
-      fleetText = ft.substring(0, splitIdx);
-      defText = ft.substring(splitIdx + ftMatch[0].length);
-    }
-    if (fleetText.trim()) {
-      var r = parseOGameReport(fleetText, SHIP_NAME_MAP, UNSUPPORTED);
+    // Robust parsing: try both name maps on both textareas.
+    // This handles combined spy reports pasted into either field.
+    var DEF_UNSUPPORTED = ["anti-ballistic missiles", "anti-ballistic missile", "interplanetary missiles", "interplanetary missile"];
+    if (ft.trim()) {
+      // Parse ships from Fleet textarea
+      var r = parseOGameReport(ft, SHIP_NAME_MAP, UNSUPPORTED);
       fillForm(r.parsed, "");
-      msgs.push("Fleet: " + Object.keys(r.parsed).length + " types parsed");
-      if (r.unsupported.length) msgs.push("Skipped (unsupported): " + r.unsupported.join(", "));
-      if (r.unknown.length) msgs.push("Unknown: " + r.unknown.join(", "));
+      if (Object.keys(r.parsed).length > 0) msgs.push("Fleet: " + Object.keys(r.parsed).length + " types parsed");
+      // Also try parsing defenses from Fleet textarea (combined report)
+      var rDef = parseOGameReport(ft, DEFENSE_NAME_MAP, DEF_UNSUPPORTED);
+      fillForm(rDef.parsed, "");
+      if (Object.keys(rDef.parsed).length > 0) msgs.push("Defenses (from fleet field): " + Object.keys(rDef.parsed).length + " types parsed");
+      // Collect unknowns (items not matched by either map)
+      var allParsed = {};
+      for (var k in r.parsed) allParsed[k] = true;
+      for (var kd in rDef.parsed) allParsed[kd] = true;
+      if (r.unsupported.length) msgs.push("Skipped: " + r.unsupported.join(", "));
+      // Unknown = items in r.unknown that are NOT in rDef.parsed
+      var trulyUnknown = r.unknown.filter(function(u) { return rDef.unknown.indexOf(u) < 0; });
+      if (trulyUnknown.length) msgs.push("Unknown: " + trulyUnknown.join(", "));
     }
-    if (defText.trim()) {
-      var r2 = parseOGameReport(defText, DEFENSE_NAME_MAP, ["anti-ballistic missiles", "anti-ballistic missile", "interplanetary missiles", "interplanetary missile"]);
+    if (dt.trim()) {
+      // Parse defenses from Defenses textarea
+      var r2 = parseOGameReport(dt, DEFENSE_NAME_MAP, DEF_UNSUPPORTED);
       fillForm(r2.parsed, "");
-      msgs.push("Defenses: " + Object.keys(r2.parsed).length + " types parsed");
-      if (r2.unsupported.length) msgs.push("Skipped (unsupported): " + r2.unsupported.join(", "));
-      if (r2.unknown.length) msgs.push("Unknown defenses: " + r2.unknown.join(", "));
+      if (Object.keys(r2.parsed).length > 0) msgs.push("Defenses: " + Object.keys(r2.parsed).length + " types parsed");
+      // Also try parsing ships from Defenses textarea (in case user mixed them)
+      var rShip = parseOGameReport(dt, SHIP_NAME_MAP, UNSUPPORTED);
+      fillForm(rShip.parsed, "");
+      if (Object.keys(rShip.parsed).length > 0) msgs.push("Fleet (from defense field): " + Object.keys(rShip.parsed).length + " types parsed");
+      if (r2.unsupported.length) msgs.push("Skipped: " + r2.unsupported.join(", "));
     }
     if (!msgs.length) { sb.textContent = "Nothing to parse. Paste data first."; sb.classList.add("parse-warning"); }
     else { sb.innerHTML = msgs.map(function(m) { return "<div>" + m + "</div>"; }).join(""); sb.classList.add("parse-ok"); }
