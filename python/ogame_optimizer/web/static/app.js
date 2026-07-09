@@ -496,7 +496,7 @@ if (parseBtn) {
     var sb = document.getElementById("parse-status");
     sb.className = "parse-status"; sb.textContent = "";
     var ft = document.getElementById("paste-fleet").value;
-    var dt = document.getElementById("paste-defenses").value;
+    var dt = ""; // single paste box, no separate defenses field
     var msgs = [];
     // Robust parsing: try both name maps on both textareas.
     // This handles combined spy reports pasted into either field.
@@ -609,9 +609,7 @@ if (parseBtn) {
         if (el) el.value = "0";
       });
       var pf = document.getElementById("paste-fleet");
-      var pd = document.getElementById("paste-defenses");
       if (pf) pf.value = "";
-      if (pd) pd.value = "";
       var sb = document.getElementById("parse-status");
       if (sb) { sb.textContent = "Enemy fleet and defenses cleared."; sb.className = "parse-status parse-ok"; }
     });

@@ -54,13 +54,12 @@
   </fieldset>
 
   <fieldset>
-    <legend>Paste Fleet/Defenses (optional, fills fields below)</legend>
-    <label>Fleet
-      <textarea id="paste-fleet" rows="8" placeholder="Paste OGame fleet here, e.g. Light Fighter / 5,772 / Cruiser / 1,709"></textarea>
-    </label>
-    <label>Defenses
-      <textarea id="paste-defenses" rows="6" placeholder="Paste OGame defenses here, e.g. Rocket Launcher / 500 / Large Shield Dome / 1"></textarea>
-    </label>
+    <legend>Paste Spy Report (fleet + defenses, fills fields below)</legend>
+    <textarea id="paste-fleet" rows="10" placeholder="Paste full spy report here — ships AND defenses. e.g.:
+Light Fighter / 5,772
+Cruiser / 1,709
+Rocket Launcher / 500
+Large Shield Dome / 1"></textarea>
     <button type="button" id="parse-btn" class="btn-secondary">Parse and fill form</button>
     <button type="button" id="clean-fleet-btn" class="btn-secondary">Clean fleet</button>
     <div id="parse-status" class="parse-status"></div>
