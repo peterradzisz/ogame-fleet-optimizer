@@ -186,7 +186,7 @@
       ["Win Probability", fmtPct(wp), winColorClass(wp)],
       ["Ships Lost", (data.ships_lost_count != null ? fmtNum(data.ships_lost_count) + " / " + fmtNum(data.ships_initial_count || 0) : fmtPct(rawPct/100)), lostClass],
       ["Fleet Value", fmtNum(data.fleet_value)],
-      ["Effective Loss (after debris)", fmtNum(effLoss) + " (" + effPct.toFixed(2) + "% of fleet value)"],
+      ["Ships Lost (raw)", fmtNum(rawLoss) + " (" + rawPct.toFixed(2) + "% of fleet value)"],
       ["Debris Metal", fmtNum(data.debris_metal)],
       ["Debris Crystal", fmtNum(data.debris_crystal)],
     ];
