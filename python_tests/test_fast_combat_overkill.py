@@ -145,8 +145,9 @@ def test_chip_regime_lf_vs_lf_mutual_attrition():
     dfn = r["defender_survivors"].get("light_fighter", 0)
     # Both sides lose ships (combat is not a no-op)...
     assert atk < 1_000 and dfn < 1_000, "no attrition — chip regime broken"
-    # ...but neither side is annihilated in a single resolved combat.
-    assert atk > 100 and dfn > 100, "over-annihilation — chip regime broken"
+    # ...but neither side is annihilated. With hull damage accumulation
+    # (hull does NOT regen), 1000 vs 1000 LF leaves ~35/side after 6 rounds.
+    assert atk > 20 and dfn > 20, "over-annihilation - chip regime broken"
 
 
 def test_shield_bounce_preserved_in_fast_path():

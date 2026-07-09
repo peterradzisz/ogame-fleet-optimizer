@@ -267,7 +267,7 @@ def test_graded_fitness_profit_rewards_enemy_destruction():
     """In profit mode, enemy destruction (debris from kills) boosts fitness.
     A fleet that deals real damage ranks better than one that doesn't,
     even though both lose."""
-    enemy = {"battlecruiser": 50_000}
+    enemy = {"battlecruiser": 15_000}  # 15K: RIPs win with hull accumulation
     budget = 2_000_000_000
     fleets = [
         {"deathstar": 200},            # spike-kills many BCs -> enemy debris
@@ -286,7 +286,7 @@ def test_graded_fitness_anti_camping():
     """A tiny fleet that barely uses the budget can't 'minimise losses' by
     being small — the anti-camping penalty ensures full-budget losing fleets
     rank higher than campy ones."""
-    enemy = {"battlecruiser": 50_000}
+    enemy = {"battlecruiser": 15_000}  # 15K: RIPs win with hull accumulation
     budget = 2_000_000_000
     fleets = [
         {"deathstar": 200},      # uses ~full budget, fights

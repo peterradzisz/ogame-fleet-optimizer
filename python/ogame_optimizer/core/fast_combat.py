@@ -343,10 +343,10 @@ def _fire(attacker_side: dict, defender_side: dict, rng: random.Random):
             continue
         frac = fractions[k_def]
         count = d["count"]
-        unit_shield = d["base_shield"]   # full per-unit shield (regen'd)
+        unit_shield = d["base_shield"]   # full per-unit shield (regen'd each round)
         unit_hull = d["unit_hull"]       # full per-unit hull
-        # Survivors are reset to full hull each round (see hull reset below),
-        # so every surviving unit presents unit_shield + unit_hull of HP.
+        # unit_eff_hp uses full hull for spike/chip classification.
+        # Hull damage accumulation is handled separately via hull_pool below.
         unit_eff_hp = unit_shield + unit_hull
 
         spike_kills = 0.0   # shots that each obliterate one whole unit
@@ -389,7 +389,9 @@ def _fire(attacker_side: dict, defender_side: dict, rng: random.Random):
         else:
             hull_dmg = 0.0
 
-        hull_pool = unit_hull * survivors - hull_dmg
+        # Start from accumulated hull (d["hull"]), adjusted for spike kills
+        # (spike kills remove whole units, reducing hull proportionally).
+        hull_pool = (d["hull"] / count) * survivors - hull_dmg
         if hull_pool <= 0:
             d["count"] = 0
             d["hull"] = 0
@@ -407,10 +409,15 @@ def _fire(attacker_side: dict, defender_side: dict, rng: random.Random):
             survival_frac = hull_ratio
         new_count = int(survivors * survival_frac)
         d["count"] = new_count
-        # Reset survivor hull/shield to full (matches prior behaviour: hull
-        # damage does not accumulate across rounds; only the explosion roll
-        # removes units). Shields are also fully regen'd by _regen_shields.
-        d["hull"] = unit_hull * new_count
+        # OGame rule: hull damage ACCUMULATES across rounds. Survivors
+        # keep their reduced hull (shields regen to full via _regen_shields,
+        # but hull does NOT heal). Previously hull was reset to full each
+        # round, making defenders far too resilient.
+        if new_count > 0 and survivors > 0:
+            # Per-unit hull stays at hull_pool/survivors level
+            d["hull"] = (hull_pool / survivors) * new_count
+        else:
+            d["hull"] = 0
         d["shields"] = unit_shield * new_count
 
 
