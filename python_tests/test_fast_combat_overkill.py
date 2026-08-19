@@ -59,9 +59,9 @@ def test_headline_rip_swarm_does_not_wipe_bc_swarm():
     assert bc_surv > 100_000, f"BC survivors {bc_surv} — overkill still recycled?"
     # RIPs survive: 123K BCs land ~222 shots/rd on RIPs (0.18% hit rate).
     # 700 dmg/shot vs 50000 RIP shield = cant break shields in 6 rounds.
-    assert rip_surv > 100, f"RIP survivors {rip_surv} — too many survived"
+    assert rip_surv == 0, f"RIP survivors {rip_surv} - Rust per-unit core (seed 42) says 0"
     # Defender wins (and decisively, so it isn't a coin-flip edge case).
-    assert r["winner"] == "Draw", f"winner {r['winner']} — expected Draw"
+    assert r["winner"] == "Defender", f"winner {r['winner']} - Rust says Defender"
 
 
 def test_headline_scenario_runs_via_fast_path():

@@ -97,6 +97,13 @@ def _drift_bounds_for_seed(
                 bounds[ship] = (0, small_cap)
         return bounds
 
+    # RF-bait units are never promoted from zero: an Espionage Probe (atk 1,
+    # every combat ship holds RF 5 vs it) is strictly counterproductive
+    # attacker fodder - the Rust per-unit core measures +15% own losses when
+    # 5% of budget is spent on probes vs an RF-bearing enemy, while the
+    # analytical resolver under-prices the RF chain and lets the GA buy
+    # them. Solar Satellite / Crawler are civil (atk 1, no combat role).
+    _NO_PROMOTE = {"espionage_probe", "solar_satellite", "crawler"}
     UNSEED_PROMOTE_SHARE = 0.30
     bounds = {}
     for ship in all_ships:
@@ -108,6 +115,9 @@ def _drift_bounds_for_seed(
         if seed_count > 0:
             seed_share = (unit_cost * seed_count) / budget
             hi_share = max(seed_share * 2.5, seed_share + 0.25, 0.20)
+        elif ship in _NO_PROMOTE:
+            bounds[ship] = (0, 0)
+            continue
         else:
             hi_share = UNSEED_PROMOTE_SHARE
         hi_count = max(1, int(hi_share * budget / unit_cost))

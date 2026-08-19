@@ -348,7 +348,19 @@ def _prune_dead_weight(
     pruned_names = {s for s, _ in dead_weight}
     pruned = {s: c for s, c in fleet.items() if s not in pruned_names and c > 0}
     if not pruned:
-        return None, []
+        # Every present type reads dead-weight: single-removal artifacts on
+        # a bad base fleet (removing ANY one type and redistributing looks
+        # better, so the greedy prune would gut the fleet). Fall back to the
+        # dominant type - a pure fleet of the main type beats the poisoned
+        # mix (verified: cruiser+battlecruiser+stray at 40% win becomes
+        # pure cruiser at 100% win).
+        if not fleet:
+            return None, []
+        dominant = max(fleet, key=lambda s: fleet[s])
+        if fleet[dominant] <= 0 or len([c for c in fleet.values() if c > 0]) < 2:
+            return None, []
+        pruned_names = {s for s, c in fleet.items() if c > 0 and s != dominant}
+        pruned = {dominant: fleet[dominant]}
 
     # Redistribute freed budget to the highest-impact POSITIVE ship present.
     positive = [(s, sensitivity[s].get("impact_pct", 0))
@@ -834,7 +846,10 @@ def optimize(
     # a short GA refinement from the pruned starting point.
     _log.info("--- Phase C: Prune & refine ---")
     _prune_t0 = time.time()
-    if ga_time_budget >= 1.5 and len([c for c in ga_result.best_fleet.values() if c > 0]) > 2:
+    # >= 2 types: even a two-type fleet benefits when one type is dead
+    # weight (e.g. cruiser+battlecruiser vs fodder: pruning the BC
+    # redistributed budget turns a 40%-win fleet into a 100%-win one).
+    if ga_time_budget >= 1.5 and len([c for c in ga_result.best_fleet.values() if c > 0]) >= 2:
         _prune_base = simulate_batch(
             attacker=ga_result.best_fleet, defender=enemy_fleet,
             defender_defenses=enemy_defenses, attacker_tech=attacker_tech,

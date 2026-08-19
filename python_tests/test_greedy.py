@@ -5,7 +5,7 @@ import pytest
 
 from ogame_optimizer.optimizer.greedy import (
     greedy_optimize, phase_a1_counter_ratio_init, phase_a2_budget_fill,
-    phase_a3_local_search,
+    phase_a3_local_search, COUNTER_MAP, HIGH_DAMAGE,
 )
 from ogame_optimizer.core.fleet import SHIPS_COST, fleet_value
 
@@ -75,3 +75,52 @@ def test_int_counts_only():
     for ship, count in r.fleet.items():
         assert isinstance(count, int), f"{ship} count is not int: {type(count)}"
         assert count > 0, f"{ship} has zero count"
+
+
+# --- Reaper awareness (COUNTER_MAP / HIGH_DAMAGE) ---
+
+def test_counter_map_reaper_counters_battleship_and_bomber():
+    """Reaper is the primary counter vs battleship (RF 7) and bomber (RF 4)."""
+    assert COUNTER_MAP["battleship"] == "reaper", "reaper RF vs battleship = 7"
+    assert COUNTER_MAP["bomber"] == "reaper", "reaper RF vs bomber = 4"
+
+
+def test_counter_map_enemy_reaper_swarm():
+    """Enemy reapers are countered by light fighter swarm (only deathstar RF 30 is cost-absurd)."""
+    assert COUNTER_MAP["reaper"] == "light_fighter"
+
+
+def test_counter_map_destroyer_counter_unchanged():
+    """Destroyer stays countered by deathstar: deathstar RF 5 > reaper RF 3."""
+    assert COUNTER_MAP["destroyer"] == "deathstar"
+
+
+def test_high_damage_includes_reaper():
+    """Reaper base attack 2800 (2nd highest) must be in shield-dome reservation."""
+    assert "reaper" in HIGH_DAMAGE
+
+
+def test_phase_a1_counters_battleships_with_reapers():
+    """Phase A1 buys reapers when the enemy fields battleships."""
+    rough = phase_a1_counter_ratio_init({"battleship": 10}, {}, 1_000_000, "attack")
+    assert rough.get("reaper", 0) > 0, f"Expected reapers vs battleships, got {rough}"
+
+
+def test_phase_a1_counters_reapers_with_light_fighters():
+    """Phase A1 buys light fighters when the enemy fields reapers."""
+    rough = phase_a1_counter_ratio_init({"reaper": 5}, {}, 1_000_000, "attack")
+    assert rough.get("light_fighter", 0) > 0, f"Expected light fighters vs reapers, got {rough}"
+
+
+def test_counter_map_deathstar_destroyer():
+    """RIP counter is destroyer: LF swarm bounces (50 < 500 = 1% of RIP
+    shield), destroyer has the lowest RF-against (5) and clears the bounce
+    threshold. Rust-measured: 100% win / ~18% loss vs 1 and 10 RIPs."""
+    assert COUNTER_MAP["deathstar"] == "destroyer"
+
+
+def test_phase_a1_counters_ripps_with_destroyers():
+    """Phase A1 buys destroyers (not the useless LF swarm) vs enemy RIPs."""
+    rough = phase_a1_counter_ratio_init({"deathstar": 2}, {}, 5_000_000, "attack")
+    assert rough.get("destroyer", 0) > 0, f"Expected destroyers vs RIPs, got {rough}"
+    assert rough.get("light_fighter", 0) == 0, f"LF swarm seed must not be bought vs RIPs: {rough}"

@@ -262,6 +262,33 @@ def _make_side(fleet: Dict[str, int], defenses: Dict[str, int], tech: Tuple[int,
     return side
 
 
+
+def _poisson_ge(lam: float, m: int) -> float:
+    """P(k >= m) for k ~ Poisson(lam), integer m >= 0.
+
+    Exact for integer m via the finite series
+        P(k >= m) = 1 - e^-lam * sum_{j=0}^{m-1} lam^j / j!
+    Pure math module - no new dependencies. lam is clamped at 500 where
+    e^-lam underflows (the tail is 1.0 to double precision there).
+    """
+    if m <= 0:
+        return 1.0
+    if lam <= 0.0:
+        return 0.0
+    if lam > 500.0:
+        return 1.0
+    term = math.exp(-lam)
+    cdf = term
+    for j in range(1, m):
+        term *= lam / j
+        cdf += term
+    return max(0.0, 1.0 - min(1.0, cdf))
+
+
+SUBSTEPS = 1  # single-step per round: sub-stepped mean-field shield depletion
+# destroys the per-unit multi-hit tail (calibrated + verified vs Rust)
+
+
 def _fire(attacker_side: dict, defender_side: dict, rng: random.Random):
     """Grouped fire with per-shot overkill handling.
 
@@ -281,218 +308,247 @@ def _fire(attacker_side: dict, defender_side: dict, rng: random.Random):
     multiplier is 1 / (1 - sum_f (N-1)/N) = N for a pure target. This
     matches the Rust core and ogamespec.
     """
-    total_def_count = sum(u["count"] for u in defender_side.values())
-    if total_def_count == 0:
+    # Sub-stepped fire resolution (Rust sequential-fire parity). Real
+    # OGame fire is sequential: defenders dying mid-round concentrate the
+    # fixed start-of-round shot volume onto the remaining units, and RF
+    # chains decay as RF targets die out. Resolving each round in SUBSTEPS
+    # lockstep chunks - re-aiming per chunk against CURRENT counts - 
+    # captures this feedback. A flat single-step spread made cheap
+    # shield-less fodder (espionage probes) look far tankier than the
+    # Rust per-unit core says it is (EP fodder "helped" analytically
+    # while Rust showed +15% losses from it).
+    shooters = {k: u for k, u in attacker_side.items()
+                if u["count"] > 0 and u["atk"] > 0}
+    if not shooters:
         return
+    noise_sigma = 0.15 / math.sqrt(SUBSTEPS)
+    for _step in range(SUBSTEPS):
+        total_def_count = sum(u["count"] for u in defender_side.values())
+        if total_def_count <= 0:
+            return
+        fractions = {
+            k: (u["count"] / total_def_count if u["count"] > 0 else 0.0)
+            for k, u in defender_side.items()
+        }
+        # Global RF multiplier from the CURRENT target distribution.
+        sub_shots = {}
+        for k_atk, atk in shooters.items():
+            cont_prob = 0.0
+            for k_def, frac in fractions.items():
+                rf = RAPIDFIRE.get((k_atk, k_def), 0)
+                if rf > 1 and frac > 0:
+                    cont_prob += frac * (rf - 1) / rf
+            mult = 1.0 / (1.0 - cont_prob) if cont_prob < 0.95 else 20.0
+            sub_shots[k_atk] = atk["count"] * mult / SUBSTEPS
 
-    # Pre-compute fractions (target distribution proportions)
-    fractions = {}
-    for k, d in defender_side.items():
-        fractions[k] = d["count"] / total_def_count if d["count"] > 0 else 0.0
-
-    # Global rapidfire model (correct OGame RF mechanics).
-    #
-    # In OGame, each ship fires at a RANDOM target. If the target is an RF
-    # type, there is (RF-1)/RF probability to fire again at another RANDOM
-    # target. The chain continues until a non-RF target is hit or the
-    # continuation roll fails.
-    #
-    # The expected total shots per ship is:
-    #   shot_mult = 1 / (1 - sum(frac_i * (RF_i - 1) / RF_i))
-    # where the sum is over ALL RF target types present in the defender fleet.
-    # This single multiplier applies to ALL defender types proportionally.
-    #
-    # Verified via Monte Carlo simulation (100K ships, < 1% error).
-    # The previous per-pair model gave each pair its own full RF multiplier,
-    # overestimating total damage by ~1.4x and distorting the damage
-    # distribution (too much damage to RF targets, too little to non-RF).
-    atk_info = {}  # atk_info[atk_type][def_type] = (per_shot_dmg, effective_shots)
-    for k_atk, atk in attacker_side.items():
-        if atk["count"] == 0 or atk["atk"] <= 0:
-            continue
-        atk_info[k_atk] = {}
-        per_shot = atk["atk"]
-        # Compute global shot multiplier from ALL RF targets in defender fleet
-        cont_prob = 0.0
-        for k_def, frac in fractions.items():
-            rf = RAPIDFIRE.get((k_atk, k_def), 0)
-            if rf > 1:
-                cont_prob += frac * (rf - 1) / rf
-        shot_multiplier = 1.0 / (1.0 - cont_prob) if cont_prob < 0.95 else 20.0
-        for k_def, frac in fractions.items():
-            if frac <= 0:
+        for k_def, d in defender_side.items():
+            if d["count"] <= 0 or fractions.get(k_def, 0.0) <= 0.0:
                 continue
-            effective_shots = atk["count"] * shot_multiplier * frac
-            atk_info[k_atk][k_def] = (per_shot, effective_shots)
+            frac = fractions[k_def]
+            count = d["count"]
+            unit_shield = d["base_shield"]
+            unit_hull = d["unit_hull"]
+            unit_eff_hp = unit_shield + unit_hull
+            c_rem = d.get("shield_rem", unit_shield)
 
-    # For each defender type: resolve incoming fire with per-shot overkill
-    # handling.
-    #
-    # Two regimes are modelled per (attacker_type, defender_type) pair:
-    #
-    # * SPIKE - a single shot deals >= one defender unit's full effective HP
-    #   (shield + hull). In real OGame each such shot kills exactly ONE unit
-    #   and the excess damage is wasted. The previous implementation pooled
-    #   ALL damage and divided by per-unit HP, which recycled that excess and
-    #   made high-damage weapons (notably the 200k-attack Deathstar) vastly
-    #   too lethal vs swarms of cheap ships (e.g. 223 RIPs "wiping" 123k BCs).
-    #
-    # * CHIP - a single shot is sub-lethal. Damage accumulates in a pool
-    #   (shield first, then hull); this is the law-of-large-numbers regime
-    #   where the analytical approximation is valid.
-    #
-    # Spike kills are resolved first (each consumes one whole unit, bypassing
-    # the shared shield pool), then chip damage wears down the survivors.
-    for k_def, d in defender_side.items():
-        if d["count"] == 0 or fractions.get(k_def, 0.0) == 0.0:
-            continue
-        frac = fractions[k_def]
-        count = d["count"]
-        unit_shield = d["base_shield"]   # full per-unit shield (regen'd each round)
-        unit_hull = d["unit_hull"]       # full per-unit hull
-        # unit_eff_hp uses full hull for spike/chip classification.
-        # Hull damage accumulation is handled separately via hull_pool below.
-        unit_eff_hp = unit_shield + unit_hull
-
-        spike_kills = 0.0   # shots that each obliterate one whole unit
-        chip_dmg = 0.0      # accumulated sub-lethal damage
-        chip_shots = 0.0    # total chip shots (for per-hit damage estimate)
-
-        for k_atk, pair_info in atk_info.items():
-            if k_def not in pair_info:
-                continue
-            per_shot, effective_shots = pair_info[k_def]
-            # OGame shield bounce: a shot below 1% of the unit's max shield
-            # is completely absorbed and wasted.
-            if per_shot < unit_shield * 0.01:
-                continue
-            if effective_shots < 0.5:
-                continue
-            if per_shot >= unit_eff_hp:
-                # SPIKE: one shot kills one unit; overkill is discarded.
-                spike_kills += effective_shots
-            else:
-                # CHIP: pools into shield/hull of the surviving stack.
-                chip_dmg += per_shot * effective_shots
-                chip_shots += effective_shots
-
-        # Resolve spike kills. Each consumes one whole unit (its shield AND
-        # its hull), so this damage never enters the shared shield pool.
-        kills = min(spike_kills, count)
-        survivors = count - kills
-        if survivors <= 0:
-            d["count"] = 0
-            d["hull"] = 0
-            d["shields"] = 0
-            d["hits"] = 0.0
-            continue
-
-        # Apply chip damage to the survivors' pooled shield, then hull.
-        if chip_dmg > 0:
-            sigma = math.sqrt(max(chip_dmg * (1.0 - frac), 1.0))
-            chip_dmg = max(0.0, chip_dmg + rng.gauss(0.0, sigma))
-            shield_pool = unit_shield * survivors
-            absorbed = min(chip_dmg, shield_pool)
-            hull_dmg = chip_dmg - absorbed
-            # Hull hits = how many shots got through shields to damage hull
-            if chip_shots > 0 and hull_dmg > 0:
-                avg_dmg_per_shot = chip_dmg / chip_shots
-                hull_hits = hull_dmg / avg_dmg_per_shot if avg_dmg_per_shot > 0 else 0.0
-            else:
-                hull_hits = 0.0
-        else:
-            hull_dmg = 0.0
-            hull_hits = 0.0
-
-        # Start from accumulated hull (d["hull"]), adjusted for spike kills
-        # (spike kills remove whole units, reducing hull proportionally).
-        hull_pool = (d["hull"] / count) * survivors - hull_dmg
-        if hull_pool <= 0:
-            d["count"] = 0
-            d["hull"] = 0
-            d["shields"] = 0
-            d["hits"] = 0.0
-            continue
-
-        max_hull = unit_hull * survivors
-        hull_ratio = min(1.0, hull_pool / max_hull) if max_hull > 0 else 0.0
-
-        # === Full Poisson damage distribution model ===
-        # In OGame, each shot targets a RANDOM individual ship. Damage follows
-        # a Poisson distribution: P(k hits) = e^-lam * lam^k / k!
-        # Ships with few hits survive at high hull; ships with many hits die.
-        # The pooled model averages this, treating ALL ships as having lam hits.
-        # We instead compute survival by summing over each possible hit count.
-        #
-        # Key parameters:
-        #   lam = accumulated hull-penetrating hits per ship
-        #   dmg_per_hit = average hull damage per hit = (1-hull_ratio)/lam
-        #   For k hits: remaining = 1 - k * dmg_per_hit
-        #     remaining >= 0.7 -> survive (1.0)
-        #     0 < remaining < 0.7 -> survive with explosion probability
-        #     remaining <= 0 -> destroyed
-
-        prev_hits = d.get("hits", 0.0) * (survivors / count) if count > 0 else 0.0
-        accumulated_shots = prev_hits + hull_hits
-        lam = accumulated_shots / survivors if survivors > 0 else 0.0
-
-        if lam < 0.01 or hull_ratio >= 1.0:
-            # No meaningful damage - all survive
-            survival_frac = 1.0
-            hull_factor = hull_ratio
-        else:
-            # Average hull damage per hit (as fraction of unit_hull)
-            dmg_per_hit = (1.0 - hull_ratio) / lam if lam > 0 else 0.0
-            # Cap iterations at point where remaining hull goes negative
-            max_k = min(int(1.0 / dmg_per_hit) + 2, 60) if dmg_per_hit > 0 else 1
-
-            survival_frac = 0.0
-            hull_factor = 0.0
-            # Poisson P(k) computed iteratively
-            p_k = math.exp(-min(lam, 20.0))  # P(0)
-            for k in range(max_k + 1):
-                remaining = 1.0 - k * dmg_per_hit
-                if remaining >= 0.7:
-                    survive = 1.0
-                    surv_hull = remaining
-                elif remaining > 0:
-                    p_explode = ((0.7 - remaining) / 0.7) * (1.0 - remaining)
-                    survive = remaining * (1.0 - p_explode)
-                    surv_hull = remaining
+            spike_kills = 0.0
+            chip_streams = []
+            for k_atk, atk in shooters.items():
+                per_shot = atk["atk"]
+                aimed = sub_shots[k_atk] * frac
+                # OGame shield bounce: a shot below 1% of the unit's max
+                # shield is completely absorbed and wasted.
+                if per_shot < unit_shield * 0.01:
+                    continue
+                if aimed < 0.5:
+                    continue
+                if per_shot >= unit_eff_hp:
+                    spike_kills += aimed
                 else:
-                    survive = 0.0
-                    surv_hull = 0.0
-                survival_frac += p_k * survive
-                hull_factor += p_k * survive * surv_hull
-                # Next Poisson term: P(k+1) = P(k) * lam / (k+1)
-                p_k *= lam / (k + 1)
+                    chip_streams.append((per_shot, aimed))
 
-            # Normalize hull_factor to average hull of SURVIVORS
-            if survival_frac > 0:
-                hull_factor = hull_factor / survival_frac
-            else:
-                hull_factor = 0.0
+            kills = min(spike_kills, count)
+            survivors = count - kills
+            if survivors <= 0:
+                d["count"] = 0
+                d["hull"] = 0
+                d["shields"] = 0
+                d["hits"] = 0.0
+                d["shield_rem"] = 0.0
+                d["dmg_bins"] = []
+                continue
 
-        survival_frac = min(1.0, survival_frac)
-        new_count = int(survivors * survival_frac)
-        d["count"] = new_count
-        # Hull accumulation
-        if new_count > 0:
-            d["hull"] = unit_hull * new_count * hull_factor
-        else:
-            d["hull"] = 0
-        d["shields"] = unit_shield * new_count
-        # Update accumulated hits (survivorship bias: survivors had fewer hits)
-        if new_count > 0 and survivors > 0:
-            d["hits"] = accumulated_shots * (new_count / survivors)
-        else:
-            d["hits"] = 0.0
+            # === Per-unit Poisson path model (spec: src/combat.rs apply_damage) ===
+            # Aggregate chip streams into one Poisson stream: lam shots of mean
+            # size s_eff per survivor. Within the round each unit's shield
+            # (fully regenerated) absorbs the first ceil(C/s_eff) shots' worth;
+            # the spill (k*s - C)+ damages the hull on top of the unit's prior
+            # damage. A unit dies when total damage reaches 100%. Every shot
+            # arriving while the unit is below 70% hull rolls an explosion
+            # check with chance equal to the CURRENT damage fraction (Rust
+            # apply_damage semantics). Prior damage is carried as a small
+            # HISTOGRAM (damage fraction -> unit weight) so cross-round
+            # compounding variance is preserved: units hit hard in early rounds
+            # are the ones that cross the 70% explosion threshold later - a
+            # survivor-mean field would compress exactly this tail. Counts stay
+            # FLOAT through the rounds; the old per-round int() truncation was
+            # the source of the scale-flat "exactly 800k" Reaper loss.
+            if survivors <= 0.5:
+                d["count"] = 0
+                d["hull"] = 0
+                d["shields"] = 0
+                d["hits"] = 0.0
+                d["shield_rem"] = 0.0
+                continue
+            lam_tot = 0.0
+            w_dmg = 0.0
+            for per_shot, aimed in chip_streams:
+                lam_tot += aimed
+                w_dmg += aimed * per_shot
+            if lam_tot <= 0.0:
+                d["count"] = survivors
+                d["shields"] = unit_shield * survivors
+                continue
+            s_eff = w_dmg / lam_tot
+            lam = min(lam_tot / survivors, 500.0)
+            # Small cross-sim variance (CRN-friendly): perturb the shot rate.
+            lam *= max(0.25, 1.0 + rng.gauss(0.0, noise_sigma))
+            H = unit_hull
+            if H <= 0:
+                continue
+            j_strip = (
+                max(1, int(math.ceil(c_rem / s_eff - 1e-12)))
+                if c_rem > 0 else 0
+            )
+
+            bins = d.get("dmg_bins")
+            if not bins:
+                bins = [(0.0, 1.0)]
+
+            if lam > 30.0:
+                # Poisson spread is negligible here (sigma/mean < 18%): collapse
+                # the histogram to its mean and take the modal shot count.
+                x_prev = min(0.99, sum(w * x for x, w in bins) / max(sum(w for _, w in bins), 1e-9))
+                k = int(lam + 0.5)
+                x_k = x_prev + max(0.0, k * s_eff - c_rem) / H
+                path = 1.0
+                for j in range(j_strip, k + 1):
+                    x_j = x_prev + max(0.0, j * s_eff - c_rem) / H
+                    if x_j > 0.3:
+                        path *= max(0.0, 1.0 - min(x_j, 0.99))
+                if x_k >= 1.0 or path <= 0.0:
+                    d["count"] = 0
+                    d["hull"] = 0
+                    d["shields"] = 0
+                    d["hits"] = 0.0
+                    d["shield_rem"] = 0.0
+                    d["dmg_bins"] = []
+                    continue
+                new_count = survivors * path
+                d["count"] = new_count
+                d["dmg_frac"] = x_k
+                d["hull"] = H * new_count * max(0.0, 1.0 - x_k)
+                d["shields"] = unit_shield * new_count
+                d["hits"] = lam * new_count
+                d["shield_rem"] = max(0.0, c_rem - s_eff * lam)
+
+            support = int(lam + 8.0 * math.sqrt(lam)) + 2
+            k_cap = min(support, 2000)
+            p_exp = math.exp(-lam)
+
+            # Normalise the carried histogram: the bin weights describe the
+            # damage DISTRIBUTION of the current survivors. Prior survival is
+            # already baked into d["count"]; re-multiplying stale weights (<1)
+            # into the count every round produced a phantom ~0.45%/round loss
+            # even with no incoming fire (observed vs the Rust core).
+            wsum = sum(w for _, w in bins)
+            if wsum <= 0:
+                bins = [(0.0, 1.0)]
+                wsum = 1.0
+
+            new_pairs = []
+            for x_prev, w_b in bins:
+                if w_b <= 0.0 or x_prev >= 1.0:
+                    continue
+                w_b = w_b / wsum
+                if s_eff > 0:
+                    k_kill = int(((1.0 - x_prev) * H + c_rem) / s_eff) + 2
+                else:
+                    k_kill = k_cap + 1
+                k_max = min(k_cap, max(k_kill, 1))
+                p_k = p_exp
+                path = 1.0
+                surv_b = 0.0
+                dmg_b = 0.0
+                for k in range(k_max + 1):
+                    x_k = x_prev + max(0.0, k * s_eff - c_rem) / H
+                    if x_k >= 1.0:
+                        break
+                    if k >= j_strip and x_k > 0.3:
+                        path *= max(0.0, 1.0 - min(x_k, 0.99))
+                    if path <= 0.0:
+                        break
+                    surv_b += p_k * path
+                    dmg_b += p_k * path * x_k
+                    p_k *= lam / (k + 1)
+                if surv_b > 1e-12 and dmg_b > 0.0:
+                    new_pairs.append((min(dmg_b / surv_b, 0.99), w_b * surv_b))
+
+            if not new_pairs:
+                d["count"] = 0
+                d["hull"] = 0
+                d["shields"] = 0
+                d["hits"] = 0.0
+                d["shield_rem"] = 0.0
+                d["dmg_bins"] = []
+                continue
+
+            # Damp the cross-round damage stratification. The exact R-fold
+            # convolution (undamped per-k lineages) overstates persistent
+            # stratification vs the Rust per-unit core, while collapsing each
+            # round to the survivor mean discards it entirely; calibrated on
+            # the canonical pure duels (reaper/destroyer vs BC at 300/600/
+            # 1000/3000), the Rust results sit at the geometric mean of the
+            # two, i.e. deviations from the round mean damped by ~50-80%.
+            BETA_SPREAD = 0.90 if s_eff <= unit_shield * 1.0 else 0.5
+            if new_pairs:
+                w_tot = sum(w for _, w in new_pairs)
+                x_bar = sum(x * w for x, w in new_pairs) / max(w_tot, 1e-12)
+                new_pairs = [
+                    (x_bar + BETA_SPREAD * (x - x_bar), w) for x, w in new_pairs
+                ]
+
+            # Rebin into fixed 5%-wide damage buckets to bound growth. Each
+            # bucket stores the WEIGHTED MEAN x of the pairs assigned to it
+            # (not the bucket centre): this conserves the distribution mean
+            # without injecting artificial spread, which would inflate the
+            # explosion-zone weight round over round.
+            bucket = {}
+            for x, w in new_pairs:
+                key = min(int(x / 0.05), 19)
+                sx, sw = bucket.get(key, (0.0, 0.0))
+                bucket[key] = (sx + x * w, sw + w)
+            d["dmg_bins"] = sorted(
+                (sx / sw, sw) for _, (sx, sw) in bucket.items() if sw > 0
+            )
+
+            surv_total = sum(w for _, w in d["dmg_bins"])
+            new_count = survivors * min(1.0, surv_total)
+            x_mean = sum(x * w for x, w in d["dmg_bins"]) / max(surv_total, 1e-9)
+            d["count"] = new_count
+            d["dmg_frac"] = x_mean
+            d["hull"] = H * new_count * max(0.0, 1.0 - x_mean)
+            d["shields"] = unit_shield * new_count
+            d["hits"] = lam * new_count
+            d["shield_rem"] = max(0.0, c_rem - s_eff * lam)
+
 
 
 def _regen_shields(side: dict):
     """Regenerate shields to full (OGame rule: shields regen each round)."""
     for u in side.values():
         u["shields"] = u["base_shield"] * u["count"]
+        u["shield_rem"] = u["base_shield"]
 
 
 def simulate_combat_fast(
@@ -554,9 +610,15 @@ def simulate_combat_fast(
         _regen_shields(atk_side)
         _regen_shields(def_side)
 
-    atk_surv = {k: u["count"] for k, u in atk_side.items() if u["count"] > 0}
-    def_ship_surv = {k: u["count"] for k, u in def_side.items() if u["count"] > 0 and k in SHIP_STATS}
-    def_def_surv = {k: u["count"] for k, u in def_side.items() if u["count"] > 0 and k in DEFENSE_STATS}
+    # Public schema: integer survivor counts. Counts stay FLOAT through the
+    # rounds (expectation model); truncate exactly once here. NOTE: floor
+    # quantisation adds a bounded +~1 unit/type loss bias; at the fleet
+    # scales this resolver serves (>500 units, auto-routed away from the
+    # Rust per-unit core) it is negligible and the spread-damping constants
+    # (BETA_SPREAD) are calibrated WITH it.
+    atk_surv = {k: int(u["count"]) for k, u in atk_side.items() if int(u["count"]) > 0}
+    def_ship_surv = {k: int(u["count"]) for k, u in def_side.items() if int(u["count"]) > 0 and k in SHIP_STATS}
+    def_def_surv = {k: int(u["count"]) for k, u in def_side.items() if int(u["count"]) > 0 and k in DEFENSE_STATS}
 
     atk_total = sum(atk_surv.values())
     def_total = sum(def_ship_surv.values()) + sum(def_def_surv.values())

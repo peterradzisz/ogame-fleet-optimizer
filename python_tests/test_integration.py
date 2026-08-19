@@ -155,17 +155,20 @@ def test_prune_returns_none_when_no_dead_weight():
 
 
 def test_prune_does_not_empty_fleet():
-    """If ALL ships are dead-weight, pruning is skipped (returns None) rather
-    than producing an empty fleet."""
+    """If ALL ships are dead-weight (single-removal artifacts on a bad base
+    fleet), pruning falls back to the DOMINANT type rather than producing
+    an empty fleet (or keeping the poisoned mix, the old skip behavior)."""
     fleet = {"cruiser": 100, "battleship": 10}
     sensitivity = {
         "cruiser": {"impact_pct": -10.0},
         "battleship": {"impact_pct": -8.0},
     }
     pruned, names = _prune_dead_weight(fleet, sensitivity)
-    # Both dead-weight -- helper refuses to empty the fleet.
-    assert pruned is None
-    assert names == []
+    # Both dead-weight -> keep the dominant type (plus the freed budget
+    # redistributed into it), never empty, battleship gone.
+    assert set(pruned) == {"cruiser"}
+    assert pruned["cruiser"] >= 100
+    assert set(names) == {"battleship"}
 
 
 def test_prune_and_refine_runs_end_to_end():

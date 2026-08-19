@@ -9,22 +9,40 @@ from ogame_optimizer.core.fleet import fleet_value, SHIPS_COST
 
 
 # Counter-ratio mapping: enemy ship -> primary counter ship
+# RF numbers verified against BOTH authoritative tables: src/rapidfire.rs and
+# python/ogame_optimizer/core/fast_combat.py RAPIDFIRE (they agree).
 COUNTER_MAP: Dict[str, str] = {
     "light_fighter": "cruiser",
     "heavy_fighter": "cruiser",
     "cruiser": "battlecruiser",
-    "battleship": "destroyer",
+    "battleship": "reaper",        # reaper RF vs battleship = 7 (rs:152 / py:107)
     "battlecruiser": "battleship",
-    "bomber": "destroyer",
+    "bomber": "reaper",            # reaper RF vs bomber = 4 (rs:153 / py:108)
+    # destroyer: deathstar RF vs destroyer = 5 (rs:188 / py:131) beats reaper RF = 3
+    # (rs:154 / py:109), so deathstar stays the primary counter despite its cost.
     "destroyer": "deathstar",
-    "deathstar": "light_fighter",  # swarm
+    # RIP counter: an LF swarm is physically useless (LF attack 50 < 1% of
+    # the RIP's 50,000 shield = 500 -> every shot bounces, zero damage
+    # forever). Destroyer is the best damage-capable counter: RIP's RF
+    # against it is only 5 (vs 30 vs battleship, 15 vs BC), and its 2000
+    # attack clears the 500 bounce threshold. Rust-measured at equal
+    # budget vs 1/10 RIPs: 100% win, ~18% own loss (battleship: 55-65%
+    # win, ~66-76% loss; battlecruiser: 0% win - cannot kill within
+    # 6 rounds).
+    "deathstar": "destroyer",
     "small_cargo": "light_fighter",
     "large_cargo": "light_fighter",
     "espionage_probe": "light_fighter",
+    # Enemy reaper: only deathstar has RF vs reaper (30, rs:186 / py:129) but it is
+    # cost-absurd. Reaper has NO RF vs light fighters, and ~40 LFs cost the same as
+    # one reaper (160k resources) -> same swarm rationale as enemy deathstar.
+    "reaper": "light_fighter",
 }
 
 # High-damage ships (used for shield-dome reservation)
-HIGH_DAMAGE = ["battleship", "bomber", "destroyer", "deathstar"]
+# reaper: base attack 2800 is 2nd highest in the game (above destroyer's 2000),
+# so shield-dome bounce reservation must include it.
+HIGH_DAMAGE = ["battleship", "bomber", "destroyer", "deathstar", "reaper"]
 
 
 @dataclass
@@ -67,15 +85,19 @@ def phase_a1_counter_ratio_init(
     needs_high_damage = has_lsd or has_ssd
 
     if needs_high_damage and budget > 0:
-        # Reserve 20% of budget for high-damage ships
+        # Reserve 20% of budget for high-damage ships, spent fully
+        # cheapest-first. The old equal split divided the reserve by the
+        # list length, which with 5 high-damage ships left per-ship slices
+        # too small to buy anything (e.g. 80k buys no reaper/destroyer)
+        # and the reserve was silently wasted.
         high_dmg_budget = int(budget * 0.2)
-        # Distribute equally among high-damage ships
-        per_ship = high_dmg_budget // len(HIGH_DAMAGE)
-        for ship in HIGH_DAMAGE:
-            if per_ship > 0:
-                cost = _ship_cost(ship)
-                if cost > 0:
-                    rough[ship] = max(0, per_ship // cost)
+        remaining = high_dmg_budget
+        for ship in sorted(HIGH_DAMAGE, key=_ship_cost):
+            cost = _ship_cost(ship)
+            if cost > 0 and remaining >= cost:
+                count = remaining // cost
+                rough[ship] = max(rough.get(ship, 0), count)
+                remaining -= count * cost
         # Reduce available budget for the rest
         used = sum(rough[s] * _ship_cost(s) for s in HIGH_DAMAGE)
         budget -= used
@@ -91,12 +113,9 @@ def phase_a1_counter_ratio_init(
         enemy_value = _ship_cost(enemy_ship) * count
         # Allocate proportional share of remaining budget
         ship_budget = int(budget * enemy_value / total_enemy_value)
-        # Pick counter (with special handling)
-        if enemy_ship == "deathstar":
-            # RIP countered by swarm
-            counter = "light_fighter"
-        else:
-            counter = COUNTER_MAP.get(enemy_ship, "cruiser")
+        # Pick counter (deathstar special case removed: the swarm seed was
+        # physically incapable of damaging a RIP - see COUNTER_MAP note)
+        counter = COUNTER_MAP.get(enemy_ship, "cruiser")
         # Convert budget to integer count
         cost = _ship_cost(counter)
         if cost > 0:

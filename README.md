@@ -13,7 +13,7 @@ A local web tool that recommends the optimal counter-fleet for any OGame battle.
 - **Optimization targets**: "Minimize Loss" or "Maximize Profit" (effective loss = raw x (1 - debris%))
 
 ### Combat Model (Full OGame Accuracy)
-- **13 ship types**: LF, HF, Cruiser, Battleship, Battlecruiser, Bomber, Destroyer, Deathstar, Small/Large Cargo, Espionage Probe + Pathfinder + Recycler
+- **14 ship types**: LF, HF, Cruiser, Battleship, Battlecruiser, Bomber, Destroyer, Deathstar, Reaper, Small/Large Cargo, Espionage Probe + Pathfinder + Recycler (Rust core also models Solar Satellite + Crawler civil units)
 - **8 defense types**: Rocket Launcher, Light/Heavy Laser, Gauss, Ion, Plasma Turret, Small/Large Shield Dome
 - **6 combat rounds** with simultaneous resolution (both sides fire at full start-of-round strength)
 - **Rapidfire** chains (BCs get 3-7x extra shots vs fodder)
@@ -157,7 +157,7 @@ ogame-fleet-optimizer/
   src/                         # Rust combat core
     lib.rs                     # PyO3 module
     combat.rs                  # simulate_combat, simulate_batch
-    ships.rs                   # 13 ships + 8 defenses + stats
+    ships.rs                   # 15 ships + 8 defenses + stats
     rapidfire.rs               # Rapidfire table
   python/ogame_optimizer/
     core/                      # combat.py, fast_combat.py, fleet.py, tech.py
