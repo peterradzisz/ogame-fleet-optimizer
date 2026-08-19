@@ -111,3 +111,42 @@ class TestOfficialBigBattle:
         assert keep["battleship"] > max(keep["cruiser"], keep["pathfinder"]), (
             "BS must keep more than CR/PF"
         )
+
+    def test_analytical_damage_tail_calibration(self):
+        """Calibration lock for the 2-moment compound-Poisson damage-tail
+        closure (fast_combat dials HEAVY_SHOT_TAU / OVERLAY_BETA /
+        HAZARD_MID / V_CAP).
+
+        Before the closure the per-unit damage model collapsed every round's
+        cross-sectional damage distribution into a single survivor-mean bin
+        and smeared heterogeneous chip fire into one averaged (lam, s_eff)
+        stream, so heavy single hits (defender reaper shot = 0.98x cruiser
+        hull, destroyer = 0.71x) essentially never reached the 70% explosion
+        zone: analytical CR keep sat at 0.941 and PF at 0.940 vs the official
+        0.814/0.799. The closure must keep the attacker's optimistic side
+        bounded - CR <= 0.87, PF <= 0.90 - while capital ships stay safe
+        (BS >= 0.90, BC >= 0.92 vs official 0.949/0.964) and the official
+        loss ranking BC > BS > max(CR, PF) still holds."""
+        r = simulate_batch_fast(BIG_ATTACKER, BIG_DEFENDER, {},
+                                attacker_tech=(18, 18, 18),
+                                defender_tech=(17, 17, 17),
+                                n_sims=20, base_seed=42)
+        surv = r.get("attacker_survivors_mean", {}) or {}
+        keep = {k: surv.get(k, 0) / BIG_ATTACKER[k] for k in BIG_ATTACKER}
+        assert keep["cruiser"] <= 0.87, (
+            f"cruiser keep {keep['cruiser']:.3f} > 0.87: damage-tail collapse "
+            "regression (official 0.814)"
+        )
+        assert keep["pathfinder"] <= 0.90, (
+            f"pathfinder keep {keep['pathfinder']:.3f} > 0.90 (official 0.799)"
+        )
+        assert keep["battleship"] >= 0.90, (
+            f"battleship keep {keep['battleship']:.3f} < 0.90 (official 0.949)"
+        )
+        assert keep["battlecruiser"] >= 0.92, (
+            f"battlecruiser keep {keep['battlecruiser']:.3f} < 0.92 "
+            "(official 0.964)"
+        )
+        assert keep["battlecruiser"] > keep["battleship"] > max(
+            keep["cruiser"], keep["pathfinder"]
+        ), f"official loss ranking BC > BS > max(CR, PF) broken: {keep}"

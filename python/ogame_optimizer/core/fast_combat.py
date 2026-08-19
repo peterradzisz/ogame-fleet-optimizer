@@ -288,6 +288,23 @@ def _poisson_ge(lam: float, m: int) -> float:
 SUBSTEPS = 1  # single-step per round: sub-stepped mean-field shield depletion
 # destroys the per-unit multi-hit tail (calibrated + verified vs Rust)
 
+# --- Compound-Poisson damage-tail closure dials ---------------------------
+# Calibrated against the official ogame.org big-battle report
+# (python_tests/test_official_battles.py): CR 81.4 / BS 94.9 / BC 96.4 /
+# PF 79.9 percent attacker keep. HEAVY_SHOT_TAU decides which chip streams
+# are convolved as explicit "heavy" lineages in the exact (lam <= 30) path;
+# OVERLAY_BETA damps their cross-round stratification; HAZARD_MID positions
+# the lam>30 explosion hazard inside the round's damage interval; V_CAP caps
+# the carried damage-fraction variance (a [0,1] quantity can never exceed
+# 0.25).
+HEAVY_SHOT_TAU = 0.25
+OVERLAY_BETA = 1.0
+HAZARD_MID = 0.5
+V_CAP = 0.25
+
+_SQRT2 = math.sqrt(2.0)
+_SQRT2PI = math.sqrt(2.0 * math.pi)
+
 
 def _fire(attacker_side: dict, defender_side: dict, rng: random.Random):
     """Grouped fire with per-shot overkill handling.
@@ -412,10 +429,29 @@ def _fire(attacker_side: dict, defender_side: dict, rng: random.Random):
             s_eff = w_dmg / lam_tot
             lam = min(lam_tot / survivors, 500.0)
             # Small cross-sim variance (CRN-friendly): perturb the shot rate.
-            lam *= max(0.25, 1.0 + rng.gauss(0.0, noise_sigma))
+            perturb = max(0.25, 1.0 + rng.gauss(0.0, noise_sigma))
+            lam *= perturb
             H = unit_hull
             if H <= 0:
                 continue
+            # Compound-stream split for the exact (lam <= 30) path: chip shots
+            # big enough to reach the explosion zone on their own
+            # (per_shot >= HEAVY_SHOT_TAU * H) are convolved as an explicit
+            # heavy lineage instead of being smeared into the damage-weighted
+            # mean shot s_eff. Averaging e.g. a 0.7*H reaper shot with
+            # probe/cargo chips understates the per-unit spill tail by orders
+            # of magnitude (P(k >= 6 | lam 0.7) ~ 1e-5 vs the true ~1%
+            # single-hit mass) - the official big battle shows exactly this
+            # signature (CR/PF bleed to mixed heavy fire while BS/BC stay
+            # safe). Single-enemy-type battles (every duel parity fixture)
+            # produce one chip stream: lam_h_tot = 0 and the exact path below
+            # stays bit-identical to the previous single-stream resolver.
+            lam_h_tot = 0.0
+            w_h = 0.0
+            for per_shot, aimed in chip_streams:
+                if per_shot >= HEAVY_SHOT_TAU * H:
+                    lam_h_tot += aimed
+                    w_h += aimed * per_shot
             j_strip = (
                 max(1, int(math.ceil(c_rem / s_eff - 1e-12)))
                 if c_rem > 0 else 0
@@ -426,17 +462,70 @@ def _fire(attacker_side: dict, defender_side: dict, rng: random.Random):
                 bins = [(0.0, 1.0)]
 
             if lam > 30.0:
-                # Poisson spread is negligible here (sigma/mean < 18%): collapse
-                # the histogram to its mean and take the modal shot count.
-                x_prev = min(0.99, sum(w * x for x, w in bins) / max(sum(w for _, w in bins), 1e-9))
-                k = int(lam + 0.5)
-                x_k = x_prev + max(0.0, k * s_eff - c_rem) / H
-                path = 1.0
-                for j in range(j_strip, k + 1):
-                    x_j = x_prev + max(0.0, j * s_eff - c_rem) / H
-                    if x_j > 0.3:
-                        path *= max(0.0, 1.0 - min(x_j, 0.99))
-                if x_k >= 1.0 or path <= 0.0:
+                # === 2-moment compound-Poisson tail closure ==================
+                # Replaces the old modal-lineage mean collapse (which destroyed
+                # all cross-sectional variance). With S = (k*s - C)+ for
+                # k ~ Poisson(lam) and m = ceil(C/s), the Poisson identities
+                #   E[k 1{k>=m}]   = lam * P(k >= m-1)
+                #   E[k^2 1{k>=m}] = lam^2*P(k >= m-2) + lam*P(k >= m-1)
+                # give the closed-form spill moments
+                #   E[S]  = s*lam*P(k>=m-1) - C*P(k>=m)
+                #   E[S2] = s^2*(lam^2*P(k>=m-2) + lam*P(k>=m-1))
+                #           - 2*s*C*lam*P(k>=m-1) + C^2*P(k>=m)
+                # Track per-type damage-fraction mean x_bar and variance v;
+                # hull deaths = Normal upper tail P(x >= 1); explosion hazard
+                # = exp(-n_s * x_eff) with n_s the expected spilling-shot
+                # count and x_eff the mid-interval damage fraction (Rust
+                # apply_damage semantics: each shot landing while hull < 70%
+                # rolls explode with chance = the then-current damage
+                # fraction, so no hazard below x = 0.3).
+                wsum = max(sum(w for _, w in bins), 1e-9)
+                x_bar = min(0.99, sum(x * w for x, w in bins) / wsum)
+                v_bar = sum(w * (x - x_bar) ** 2 for x, w in bins) / wsum
+                m = j_strip
+                Pm = _poisson_ge(lam, m)
+                Pm1 = _poisson_ge(lam, m - 1)
+                Pm2 = _poisson_ge(lam, m - 2)
+                ES = s_eff * lam * Pm1 - c_rem * Pm
+                ES2 = (
+                    s_eff * s_eff * (lam * lam * Pm2 + lam * Pm1)
+                    - 2.0 * s_eff * c_rem * lam * Pm1
+                    + c_rem * c_rem * Pm
+                )
+                var_S = max(0.0, ES2 - ES * ES)
+                x_new = x_bar + ES / H
+                v_new = min(V_CAP, v_bar + var_S / (H * H))
+                x_post = x_new
+                v_post = v_new
+                if v_new <= 1e-12:
+                    surv_tail = 0.0 if x_new >= 1.0 else 1.0
+                else:
+                    sig = math.sqrt(v_new)
+                    a = (1.0 - x_new) / sig
+                    if a > 8.3:
+                        # upper tail below double resolution: everyone survives
+                        # (0.5*erfc underflows to 0.0 beyond a ~ 27, which the
+                        # zero-out below would misread as annihilation)
+                        surv_tail = 1.0
+                    elif a < -8.3:
+                        surv_tail = 0.0
+                    else:
+                        surv_tail = max(0.0, min(1.0, 0.5 * math.erfc(a / _SQRT2)))
+                    if 1e-9 < surv_tail < 1.0 - 1e-9:
+                        # survivors' conditional moments: the upper-truncated
+                        # Normal at x = 1 (exact first/second moments)
+                        phi_a = math.exp(-0.5 * a * a) / _SQRT2PI
+                        hh = phi_a / (1.0 - surv_tail)
+                        x_post = x_new - sig * hh
+                        v_post = v_new * max(0.0, 1.0 - a * hh - hh * hh)
+                n_s = lam * Pm1 - (m - 1 if m >= 1 else 0) * Pm
+                x_eff = x_bar + HAZARD_MID * (min(x_new, 1.0) - x_bar)
+                if n_s > 0.0 and x_eff > 0.3:
+                    haz = math.exp(-n_s * x_eff)
+                else:
+                    haz = 1.0
+                surv_round = surv_tail * haz
+                if surv_round <= 1e-9:
                     d["count"] = 0
                     d["hull"] = 0
                     d["shields"] = 0
@@ -444,17 +533,30 @@ def _fire(attacker_side: dict, defender_side: dict, rng: random.Random):
                     d["shield_rem"] = 0.0
                     d["dmg_bins"] = []
                     continue
-                new_count = survivors * path
+                new_count = survivors * surv_round
+                # Explosion thinning is selective on high-x units; approximate
+                # the variance reduction by survival squared (pragmatic,
+                # documented approximation of removing the top of the spread).
+                x_post = min(max(x_post, 0.0), 0.99)
+                v_post = min(V_CAP, v_post * haz * haz)
+                sig2 = math.sqrt(v_post)
+                if sig2 > 1e-4 and 0.0 < x_post - sig2 and x_post + sig2 < 0.99:
+                    # carry the state as a 2-point histogram so a later exact
+                    # round (or this branch again) inherits both the mean and
+                    # the spread of the survivors
+                    d["dmg_bins"] = [(x_post - sig2, 0.5), (x_post + sig2, 0.5)]
+                else:
+                    d["dmg_bins"] = [(x_post, 1.0)]
                 d["count"] = new_count
-                d["dmg_frac"] = x_k
-                d["hull"] = H * new_count * max(0.0, 1.0 - x_k)
+                d["dmg_frac"] = x_post
+                d["hull"] = H * new_count * max(0.0, 1.0 - x_post)
                 d["shields"] = unit_shield * new_count
                 d["hits"] = lam * new_count
                 d["shield_rem"] = max(0.0, c_rem - s_eff * lam)
+                continue
 
             support = int(lam + 8.0 * math.sqrt(lam)) + 2
             k_cap = min(support, 2000)
-            p_exp = math.exp(-lam)
 
             # Normalise the carried histogram: the bin weights describe the
             # damage DISTRIBUTION of the current survivors. Prior survival is
@@ -467,32 +569,88 @@ def _fire(attacker_side: dict, defender_side: dict, rng: random.Random):
                 wsum = 1.0
 
             new_pairs = []
-            for x_prev, w_b in bins:
-                if w_b <= 0.0 or x_prev >= 1.0:
-                    continue
-                w_b = w_b / wsum
-                if s_eff > 0:
-                    k_kill = int(((1.0 - x_prev) * H + c_rem) / s_eff) + 2
-                else:
-                    k_kill = k_cap + 1
-                k_max = min(k_cap, max(k_kill, 1))
-                p_k = p_exp
-                path = 1.0
-                surv_b = 0.0
-                dmg_b = 0.0
-                for k in range(k_max + 1):
-                    x_k = x_prev + max(0.0, k * s_eff - c_rem) / H
-                    if x_k >= 1.0:
-                        break
-                    if k >= j_strip and x_k > 0.3:
-                        path *= max(0.0, 1.0 - min(x_k, 0.99))
-                    if path <= 0.0:
-                        break
-                    surv_b += p_k * path
-                    dmg_b += p_k * path * x_k
-                    p_k *= lam / (k + 1)
-                if surv_b > 1e-12 and dmg_b > 0.0:
-                    new_pairs.append((min(dmg_b / surv_b, 0.99), w_b * surv_b))
+            if lam_h_tot > 0.0:
+                # Joint compound convolution: j heavy shots (Poisson lam_h of
+                # size s_h, strip the shield first, each rolls the explosion
+                # check at the damage fraction it leaves behind) x k bulk
+                # shots (Poisson lam_b of size s_b, single-stream semantics
+                # below). Surviving lineages are carried as separate histogram
+                # bins ("partial tail de-collapse") so later rounds keep
+                # hazarding exactly the ships that took the heavy hits.
+                lam_h = (lam_h_tot / survivors) * perturb
+                s_h = w_h / lam_h_tot
+                lam_b = max(0.0, lam - lam_h)
+                s_b = (w_dmg - w_h) / (lam_tot - lam_h_tot) if lam_b > 0.0 else 0.0
+                p_exp_b = math.exp(-lam_b)
+                j_max = min(int(lam_h + 5.0 * math.sqrt(lam_h)) + 2, 64)
+                for x_prev, w_b in bins:
+                    if w_b <= 0.0 or x_prev >= 1.0:
+                        continue
+                    w_b = w_b / wsum
+                    p_j = math.exp(-lam_h)
+                    for j in range(j_max + 1):
+                        if p_j < 1e-14 and j > lam_h:
+                            break
+                        c_j = max(0.0, c_rem - j * s_h)
+                        x_h = x_prev + max(0.0, j * s_h - c_rem) / H
+                        path_h = 1.0
+                        for i in range(1, j + 1):
+                            x_i = x_prev + max(0.0, i * s_h - c_rem) / H
+                            if x_i > 0.3:
+                                path_h *= max(0.0, 1.0 - min(x_i, 0.99))
+                            if path_h <= 0.0:
+                                break
+                        if x_h < 1.0 and path_h > 0.0:
+                            if lam_b > 0.0:
+                                k_kill = int(((1.0 - x_h) * H + c_j) / s_b) + 2
+                                k_max = min(k_cap, max(k_kill, 1))
+                                j_strip_b = (
+                                    max(1, int(math.ceil(c_j / s_b - 1e-12)))
+                                    if c_j > 0 else 0
+                                )
+                                p_k = p_exp_b
+                                path = path_h
+                                for k in range(k_max + 1):
+                                    x_k = x_h + max(0.0, k * s_b - c_j) / H
+                                    if x_k >= 1.0:
+                                        break
+                                    if k >= j_strip_b and x_k > 0.3:
+                                        path *= max(0.0, 1.0 - min(x_k, 0.99))
+                                    if path <= 0.0:
+                                        break
+                                    new_pairs.append((x_k, w_b * p_j * p_k * path))
+                                    p_k *= lam_b / (k + 1)
+                            else:
+                                new_pairs.append((x_h, w_b * p_j * path_h))
+                        p_j *= lam_h / (j + 1)
+            else:
+                p_exp = math.exp(-lam)
+                for x_prev, w_b in bins:
+                    if w_b <= 0.0 or x_prev >= 1.0:
+                        continue
+                    w_b = w_b / wsum
+                    if s_eff > 0:
+                        k_kill = int(((1.0 - x_prev) * H + c_rem) / s_eff) + 2
+                    else:
+                        k_kill = k_cap + 1
+                    k_max = min(k_cap, max(k_kill, 1))
+                    p_k = p_exp
+                    path = 1.0
+                    surv_b = 0.0
+                    dmg_b = 0.0
+                    for k in range(k_max + 1):
+                        x_k = x_prev + max(0.0, k * s_eff - c_rem) / H
+                        if x_k >= 1.0:
+                            break
+                        if k >= j_strip and x_k > 0.3:
+                            path *= max(0.0, 1.0 - min(x_k, 0.99))
+                        if path <= 0.0:
+                            break
+                        surv_b += p_k * path
+                        dmg_b += p_k * path * x_k
+                        p_k *= lam / (k + 1)
+                    if surv_b > 1e-12 and dmg_b > 0.0:
+                        new_pairs.append((min(dmg_b / surv_b, 0.99), w_b * surv_b))
 
             if not new_pairs:
                 d["count"] = 0
@@ -510,12 +668,16 @@ def _fire(attacker_side: dict, defender_side: dict, rng: random.Random):
             # the canonical pure duels (reaper/destroyer vs BC at 300/600/
             # 1000/3000), the Rust results sit at the geometric mean of the
             # two, i.e. deviations from the round mean damped by ~50-80%.
+            # The heavy-overlay path carries its lineages (nearly) undamped:
+            # damping there would re-create the mean collapse the overlay
+            # exists to fix (OVERLAY_BETA dial).
             BETA_SPREAD = 0.8 if s_eff <= unit_shield * 1.0 else 0.5
+            beta = OVERLAY_BETA if lam_h_tot > 0.0 else BETA_SPREAD
             if new_pairs:
                 w_tot = sum(w for _, w in new_pairs)
                 x_bar = sum(x * w for x, w in new_pairs) / max(w_tot, 1e-12)
                 new_pairs = [
-                    (x_bar + BETA_SPREAD * (x - x_bar), w) for x, w in new_pairs
+                    (x_bar + beta * (x - x_bar), w) for x, w in new_pairs
                 ]
 
             # Rebin into fixed 5%-wide damage buckets to bound growth. Each
