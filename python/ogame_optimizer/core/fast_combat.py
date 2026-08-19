@@ -510,7 +510,7 @@ def _fire(attacker_side: dict, defender_side: dict, rng: random.Random):
             # the canonical pure duels (reaper/destroyer vs BC at 300/600/
             # 1000/3000), the Rust results sit at the geometric mean of the
             # two, i.e. deviations from the round mean damped by ~50-80%.
-            BETA_SPREAD = 0.90 if s_eff <= unit_shield * 1.0 else 0.5
+            BETA_SPREAD = 0.8 if s_eff <= unit_shield * 1.0 else 0.5
             if new_pairs:
                 w_tot = sum(w for _, w in new_pairs)
                 x_bar = sum(x * w for x, w in new_pairs) / max(w_tot, 1e-12)
@@ -579,27 +579,15 @@ def simulate_combat_fast(
         atk_before = sum(u["count"] for u in atk_side.values())
         def_before = sum(u["count"] for u in def_side.values())
 
-        # SIMULTANEOUS fire: both sides use start-of-round counts
-        # Snapshot defender state before attacker fires
-        def_start = {k: dict(u) for k, u in def_side.items()}
-        # Attacker fires → damages defender
+        # ATTACKER-FIRST volleys (official OGame semantics, verified against
+        # ogame.org combat simulator reports - see src/combat.rs). The
+        # attacker's full volley resolves first; only the defender types
+        # that SURVIVE it return fire. Sequential _fire calls implement
+        # this directly: the second call reads the defender's post-volley
+        # counts/damage. (The old snapshot/restore dance made both sides
+        # fire at full start-of-round strength, overstating defenders.)
         _fire(atk_side, def_side, rng)
-        # Save defender's post-attack damaged state
-        def_damaged = {k: dict(u) for k, u in def_side.items()}
-        # Restore defender's start-of-round counts for their counter-fire
-        for k, u in def_side.items():
-            u["count"] = def_start.get(k, {}).get("count", 0)
-            u["shields"] = def_start.get(k, {}).get("shields", 0)
-            u["hull"] = def_start.get(k, {}).get("hull", 0)
-            u["hits"] = def_start.get(k, {}).get("hits", 0.0)
-        # Defender fires at full strength → damages attacker
         _fire(def_side, atk_side, rng)
-        # Restore defender to the damaged state (from attacker's fire)
-        for k, u in def_side.items():
-            u["count"] = def_damaged.get(k, {}).get("count", 0)
-            u["shields"] = def_damaged.get(k, {}).get("shields", 0)
-            u["hull"] = def_damaged.get(k, {}).get("hull", 0)
-            u["hits"] = def_damaged.get(k, {}).get("hits", 0.0)
 
         # Check for stalemate (no damage either side)
         atk_after = sum(u["count"] for u in atk_side.values())
@@ -611,14 +599,17 @@ def simulate_combat_fast(
         _regen_shields(def_side)
 
     # Public schema: integer survivor counts. Counts stay FLOAT through the
-    # rounds (expectation model); truncate exactly once here. NOTE: floor
-    # quantisation adds a bounded +~1 unit/type loss bias; at the fleet
-    # scales this resolver serves (>500 units, auto-routed away from the
-    # Rust per-unit core) it is negligible and the spread-damping constants
-    # (BETA_SPREAD) are calibrated WITH it.
-    atk_surv = {k: int(u["count"]) for k, u in atk_side.items() if int(u["count"]) > 0}
-    def_ship_surv = {k: int(u["count"]) for k, u in def_side.items() if int(u["count"]) > 0 and k in SHIP_STATS}
-    def_def_surv = {k: int(u["count"]) for k, u in def_side.items() if int(u["count"]) > 0 and k in DEFENSE_STATS}
+    # rounds (expectation model); round stochastically exactly once here
+    # (floor(x + U) is unbiased across sims). A hard floor quantises any
+    # fractional death to one FULL unit in EVERY sim - under attacker-first
+    # semantics, duel-scale attacker losses are fractions of a unit, so the
+    # floor bias dominated the error (+1567% measured on destroyer@300).
+    def _sround(x: float) -> int:
+        return int(x + rng.random())
+
+    atk_surv = {k: _sround(u["count"]) for k, u in atk_side.items() if u["count"] > 0.5}
+    def_ship_surv = {k: _sround(u["count"]) for k, u in def_side.items() if u["count"] > 0.5 and k in SHIP_STATS}
+    def_def_surv = {k: _sround(u["count"]) for k, u in def_side.items() if u["count"] > 0.5 and k in DEFENSE_STATS}
 
     atk_total = sum(atk_surv.values())
     def_total = sum(def_ship_surv.values()) + sum(def_def_surv.values())

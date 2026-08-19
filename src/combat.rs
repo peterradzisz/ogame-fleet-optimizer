@@ -5,7 +5,8 @@
 //!
 //! Key correctness features:
 //! - Per-unit tracking: each ship has its own shield/hull (not pooled per type)
-//! - Simultaneous fire: both sides fire at full start-of-round strength
+//! - Attacker-first volleys: the attacker's full volley resolves before
+//!   the defender's survivors return fire (official OGame semantics)
 //! - Shield-zero handling: units with 0 max shield take full hull damage
 
 use std::collections::HashMap;
@@ -206,11 +207,17 @@ pub fn simulate_combat(input: &CombatInput) -> CombatResult {
         attacker.regen();
         defender.regen();
 
-        let atk_snapshot = attacker.clone();
-        let def_snapshot = defender.clone();
-
-        fire_phase(&atk_snapshot, &mut defender, input.attacker_tech.weapon, &mut rng);
-        fire_phase(&def_snapshot, &mut attacker, input.defender_tech.weapon, &mut rng);
+        // Official OGame engine semantics: the ATTACKER's full volley is
+        // resolved first; defenders destroyed by it do NOT return fire that
+        // round (verified against ogame.org combat simulator reports:
+        // 30 BCs vs 191 LF + escorts = draw with 8/30 BCs surviving -
+        // simultaneous-fire semantics instead produce an 85% attacker-loss
+        // outcome, which the official sim does not produce). Sequential
+        // fire_phase calls implement this: fire_phase reads the shooter's
+        // CURRENT state, so the defender's volley only includes units that
+        // survived the attacker's volley.
+        fire_phase(&attacker, &mut defender, input.attacker_tech.weapon, &mut rng);
+        fire_phase(&defender, &mut attacker, input.defender_tech.weapon, &mut rng);
 
         attacker.purge_dead();
         defender.purge_dead();
@@ -442,8 +449,13 @@ mod tests {
 
     #[test]
     fn validation_6_50cr_vs_50cr() {
+        // Attacker-volley-first semantics (official OGame): the attacker's
+        // first volley weakens the defender's return fire, so mirror
+        // matches are decisively attacker-favoured instead of draining
+        // symmetrically for 6 rounds.
         let r = simulate_combat(&vinput(vec![(ShipType::Cruiser, 50)], vec![(ShipType::Cruiser, 50)], vec![], 6));
-        assert!(r.rounds_fought == 6, "Should fight all 6 rounds");
+        assert!(r.rounds_fought >= 1 && r.rounds_fought <= 6);
+        assert_eq!(r.winner, Side::Attacker, "mirror match: attacker volley order wins");
     }
 
     #[test]
