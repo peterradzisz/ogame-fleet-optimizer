@@ -73,6 +73,16 @@
     }
     return fleet;
   }
+  // Refine seed source: in base_fleet mode the response reports the
+  // ADDITIONS separately - seed from those, not the merged fleet, or the
+  // server would merge the base on top of the (already merged) seed and
+  // count the player's existing ships twice.
+  function getRefineSeed() {
+    if (!lastResult) return null;
+    var additions = lastResult.recommended_additions;
+    if (additions && Object.keys(additions).length > 0) return additions;
+    return lastResult.recommended_fleet;
+  }
   function fmtNum(n) {
     if (n === null || n === undefined) return "-";
     return Math.round(n).toLocaleString();
@@ -115,7 +125,7 @@
         ga_time_budget: parseFloat((gaTimeEl||{value:"5"}).value || "5"),
         final_sims: parseInt((finalSimsEl||{value:"500"}).value || "500"),
         exclude_ships: getExcludedShips(),
-        seed_fleet: (useSeedFleet && lastResult) ? lastResult.recommended_fleet : null,
+        seed_fleet: (useSeedFleet && lastResult) ? getRefineSeed() : null,
         debris_pct: parseFloat((document.getElementById('debris_pct')||{value:'0.30'}).value || '0.30'),
         deuterium_in_debris: document.getElementById('deut_in_debris') ? document.getElementById('deut_in_debris').checked : false,
         optimization_target: (document.getElementById('optimization_target')||{value:'maximize_profit'}).value || 'maximize_profit',
@@ -465,19 +475,35 @@
     if (refineBtn) refineBtn.disabled = false;
   }
 
-  // ---- Clear refine when budget multiplier changes ----
+  // ---- Clear refine when the scenario changes ----
+  // The refine seed was optimised for the previous enemy / techs / budget;
+  // after any edit it no longer describes the battle being optimised.
+  function resetRefineState(reason) {
+    if (!lastResult) return;
+    lastResult = null;
+    refineCount = 0;
+    if (refineBtn) refineBtn.disabled = true;
+    var info = document.getElementById('refine-info');
+    if (info) { info.textContent = (reason || 'Inputs changed') + ' - starting fresh optimization'; info.classList.remove('hidden'); }
+  }
   var multSelect = document.querySelector('select[name="budget_multiplier"]');
   if (multSelect) {
-    multSelect.addEventListener('change', function() {
-      if (lastResult) {
-        lastResult = null;
-        refineCount = 0;
-        if (refineBtn) refineBtn.disabled = true;
-        var info = document.getElementById('refine-info');
-        if (info) { info.textContent = 'Budget changed - starting fresh optimization'; info.classList.remove('hidden'); }
-      }
-    });
+    multSelect.addEventListener('change', function() { resetRefineState('Budget changed'); });
   }
+  // Enemy fleet / defenses / techs / mode edits invalidate the seed too.
+  function onScenarioInputChanged() { resetRefineState('Inputs changed'); }
+  SHIP_KEYS.concat(DEFENSE_KEYS).forEach(function(k) {
+    var el = document.querySelector('input[name="' + k + '"]');
+    if (el) el.addEventListener('input', onScenarioInputChanged);
+  });
+  ["attacker_weapon", "attacker_shield", "attacker_armor",
+   "defender_weapon", "defender_shield", "defender_armor"].forEach(function(k) {
+    var el = document.querySelector('input[name="' + k + '"]');
+    if (el) el.addEventListener('input', onScenarioInputChanged);
+  });
+  document.querySelectorAll('input[name="mode"]').forEach(function(r) {
+    r.addEventListener('change', onScenarioInputChanged);
+  });
 
   // ---- Refine button ----
   if (refineBtn) {
@@ -631,12 +657,8 @@ if (parseBtn) {
     if (multSelect) {
       multSelect.value = tabName === "myfleet" ? "0.1" : "1.0";
     }
-    // Reset refine state on tab switch
-    if (lastResult) {
-      lastResult = null;
-      refineCount = 0;
-      if (refineBtn) refineBtn.disabled = true;
-    }
+    // Reset refine state on tab switch (scenario context changed)
+    resetRefineState('Tab changed');
   }
   tabBtns.forEach(function(b) {
     b.addEventListener("click", function() { switchTab(b.dataset.tab); });
@@ -1000,6 +1022,10 @@ if (parseBtn) {
     lastResult = snap;
     renderResults(snap);
     renderHistoryTabs();
+    // Refine only from the LATEST result (idx === 0): older snapshots may
+    // not match the current enemy / budget. renderResults re-enables the
+    // button, so disable it AFTER rendering.
+    if (refineBtn) refineBtn.disabled = (idx !== 0);
     var r = document.getElementById('results');
     if (r) r.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }

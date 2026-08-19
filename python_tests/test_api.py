@@ -200,3 +200,53 @@ def test_optimize_min_gain_pct_default_zero(client):
     data = r.json()
     assert data["min_gain_required"] == 0.0
     assert data["min_gain_met"] is True
+
+
+def _seed_fleet_payload(**overrides):
+    """Base /api/optimize payload with overridable extras (seed_fleet tests)."""
+    payload = {
+        "enemy_fleet": {"ships": {"light_fighter": 100}},
+        "enemy_defenses": {"defenses": {}},
+        "attacker_tech": {"weapon": 0, "shield": 0, "armor": 0},
+        "defender_tech": {"weapon": 0, "shield": 0, "armor": 0},
+        "budget_multiplier": 1.0,
+        "mode": "attack",
+        "seed": 42,
+        "ga_time_budget": 0.3,
+        "final_sims": 50,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_optimize_valid_seed_fleet_accepted(client):
+    """A well-formed seed_fleet (known ships, non-negative ints) passes."""
+    r = client.post("/api/optimize", json=_seed_fleet_payload(seed_fleet={"cruiser": 10}))
+    assert r.status_code == 200, r.text
+    assert len(r.json()["recommended_fleet"]) > 0
+
+
+def test_optimize_seed_fleet_unknown_ship_rejected(client):
+    """seed_fleet with an unknown ship key is rejected with 422."""
+    r = client.post("/api/optimize", json=_seed_fleet_payload(seed_fleet={"unknown_ship": 5}))
+    assert r.status_code == 422
+    assert "unknown_ship" in r.text
+
+
+def test_optimize_seed_fleet_negative_count_rejected(client):
+    """seed_fleet with a negative count is rejected with 422."""
+    r = client.post("/api/optimize", json=_seed_fleet_payload(seed_fleet={"cruiser": -3}))
+    assert r.status_code == 422
+    assert "Seed count must be >= 0" in r.text
+
+
+def test_optimize_seed_fleet_non_int_count_rejected(client):
+    """seed_fleet with a non-int count is rejected with 422."""
+    r = client.post("/api/optimize", json=_seed_fleet_payload(seed_fleet={"cruiser": 3.5}))
+    assert r.status_code == 422
+
+
+def test_optimize_seed_fleet_empty_dict_accepted(client):
+    """Empty seed_fleet dict = no seed (orchestration treats falsy as no-seed)."""
+    r = client.post("/api/optimize", json=_seed_fleet_payload(seed_fleet={}))
+    assert r.status_code == 200, r.text

@@ -92,3 +92,33 @@ def test_healthz_still_works(client):
     r = client.get("/healthz")
     assert r.status_code == 200
     assert r.json()["status"] == "ok"
+
+
+def test_app_js_refine_seeds_from_additions_in_base_mode(client):
+    """Refine must seed from recommended_additions (base mode), not the
+    merged recommended_fleet, to avoid double-counting the base fleet."""
+    body = client.get("/static/app.js").text
+    assert "function getRefineSeed()" in body
+    assert "recommended_additions" in body
+    assert "seed_fleet: (useSeedFleet && lastResult) ? getRefineSeed() : null" in body
+
+
+def test_app_js_has_reset_refine_state_wired_to_scenario_inputs(client):
+    """Enemy/defense/tech/mode edits must reset the refine seed via a
+    shared resetRefineState() helper."""
+    body = client.get("/static/app.js").text
+    assert "function resetRefineState(" in body
+    assert "resetRefineState('Budget changed')" in body
+    assert "resetRefineState('Tab changed')" in body
+    assert "resetRefineState('Inputs changed')" in body
+    # Wired to enemy + defense inputs, tech inputs, and mode radios.
+    assert "SHIP_KEYS.concat(DEFENSE_KEYS).forEach" in body
+    assert 'input[name="attacker_weapon"]' in body or '"attacker_weapon"' in body
+    assert "input[name=\"mode\"]" in body
+
+
+def test_app_js_history_load_disables_refine_for_old_entries(client):
+    """Loading an old history snapshot must disable Refine (only the
+    latest result may seed a refinement)."""
+    body = client.get("/static/app.js").text
+    assert "refineBtn.disabled = (idx !== 0);" in body

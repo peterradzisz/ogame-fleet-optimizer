@@ -105,6 +105,22 @@ class OptimizeRequest(BaseModel):
             raise ValueError(f"min_gain_pct must be in [0, 100], got {v}")
         return v
 
+    @field_validator("seed_fleet")
+    @classmethod
+    def validate_seed_fleet(cls, v: Optional[Dict[str, int]]) -> Optional[Dict[str, int]]:
+        """Validate the refine seed like ShipCounts: known ship types and
+        non-negative counts (non-int values are rejected by the
+        Dict[str, int] annotation). Empty dict = no seed (allowed)."""
+        if v is None:
+            return v
+        valid = {"small_cargo", "large_cargo", "light_fighter", "heavy_fighter", "cruiser", "battleship", "battlecruiser", "bomber", "destroyer", "deathstar", "pathfinder", "reaper", "recycler", "espionage_probe", "solar_satellite", "crawler"}
+        for k, val in v.items():
+            if k not in valid:
+                raise ValueError(f"Unknown ship type: {k}")
+            if val < 0:
+                raise ValueError(f"Seed count must be >= 0, got {val} for {k}")
+        return v
+
 
 class OptimizeResponse(BaseModel):
     recommended_fleet: Dict[str, int]

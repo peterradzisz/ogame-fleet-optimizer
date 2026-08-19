@@ -580,19 +580,48 @@ def optimize(
                 recommended_additions={},
             )
 
+    # --- Refine-seed normalisation (before Phase A adopts it) ---
+    # 1. base_fleet mode: the client sends the previously recommended
+    #    MERGED fleet (base + additions). Strip base counts, else the
+    #    base is merged on top again downstream and counted twice in
+    #    every combat evaluation.
+    # 2. Budget feasibility: an over-budget seed would be validated and
+    #    set global_best_loss to a loss that no budget-constrained GA
+    #    candidate can beat (unbeatable benchmark). Scale it down at
+    #    adoption time (same int() truncation style as the post-GA
+    #    scale-down). In base_fleet mode only the ADDITIONS are scaled
+    #    against the additions budget; the base is a sunk cost.
+    _refine_seed = None
+    if seed_fleet and not (base_fleet and _ga_budget == 0):
+        _refine_seed = {k: v for k, v in seed_fleet.items() if v > 0}
+        if base_fleet:
+            _refine_seed = {k: v - base_fleet.get(k, 0) for k, v in _refine_seed.items()}
+            _refine_seed = {k: v for k, v in _refine_seed.items() if v > 0}
+        _seed_cost = fleet_value(_refine_seed) if _refine_seed else 0
+        if _seed_cost > budget and _seed_cost > 0:
+            _log.warning("refine seed over budget, scaled down (cost=%d > budget=%d)",
+                         _seed_cost, budget)
+            _seed_scale = budget / _seed_cost
+            _refine_seed = {k: int(v * _seed_scale) for k, v in _refine_seed.items()
+                            if int(v * _seed_scale) > 0}
+        if not _refine_seed:
+            _log.warning("refine seed empty after normalisation - falling back to greedy")
+            _refine_seed = None
+
     # Phase A: greedy (or use provided seed_fleet for refinement)
     if base_fleet and _ga_budget == 0:
         _log.info('--- Phase A: SKIPPED (0.0x simulation, no additions budget) ---')
         from ogame_optimizer.optimizer.greedy import GreedyResult
         greedy_result = GreedyResult(fleet={}, estimated_loss=0.0, time_elapsed=0.0)
-    elif seed_fleet:
+    elif _refine_seed:
         _log.info("--- Phase A: Using provided seed_fleet (refinement) ---")
         from ogame_optimizer.optimizer.greedy import GreedyResult
-        greedy_result = GreedyResult(fleet=dict(seed_fleet), estimated_loss=0.0, time_elapsed=0.0)
-        # Evaluate it to get baseline loss
+        greedy_result = GreedyResult(fleet=dict(_refine_seed), estimated_loss=0.0, time_elapsed=0.0)
+        # Evaluate it to get baseline loss (merged with base for combat)
         from ogame_optimizer.optimizer.greedy import _evaluate_single
+        _seed_eval_fleet = _merge_fleet(base_fleet, _refine_seed) if base_fleet else _refine_seed
         greedy_result.estimated_loss = _evaluate_single(
-            seed_fleet, enemy_fleet, enemy_defenses, enemy_tech, attacker_tech, base_seed
+            _seed_eval_fleet, enemy_fleet, enemy_defenses, enemy_tech, attacker_tech, base_seed
         )
     else:
         _log.info("--- Phase A: Greedy (budget=1.0s) ---")
@@ -672,8 +701,10 @@ def optimize(
         n_sims=200,
         base_seed=base_seed + 7777,
     )
-    # Apply resource-preference penalty (composition objective).
-    _greedy_penalty = resource_preference_penalty(greedy_result.fleet, resource_weights, preference_beta)
+    # Apply resource-preference penalty (composition objective). Score the
+    # fleet combat actually sees (base + additions merge), matching how GA
+    # candidates are penalised on their merged fleets.
+    _greedy_penalty = resource_preference_penalty(global_best_fleet, resource_weights, preference_beta)
     global_best_loss = float(greedy_validation.get("mean_attacker_loss", greedy_result.estimated_loss)) * _loss_scale + _greedy_penalty
     _log.info("Baseline (greedy, validated 200 sims): eff_loss=%.0f (raw=%.0f + penalty=%.0f) win=%.0f%%",
               global_best_loss,
