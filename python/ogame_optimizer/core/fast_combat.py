@@ -649,8 +649,16 @@ def _fire(attacker_side: dict, defender_side: dict, rng: random.Random):
                         surv_b += p_k * path
                         dmg_b += p_k * path * x_k
                         p_k *= lam / (k + 1)
-                    if surv_b > 1e-12 and dmg_b > 0.0:
-                        new_pairs.append((min(dmg_b / surv_b, 0.99), w_b * surv_b))
+                    if surv_b > 1e-12:
+                        # dmg_b == 0.0 with surv_b > 0: every shot within the
+                        # k-support was fully shield-absorbed (x_k = 0 for all
+                        # covered k, e.g. one probe shot of 1 vs a 10-shield
+                        # LF stack). That lineage survives UNDAMAGED and must
+                        # still be appended - dropping it left new_pairs empty
+                        # and the fallback below annihilated the whole stack
+                        # ("1 probe kills 500 LFs" phantom Attacker wins).
+                        x_pair = min(dmg_b / surv_b, 0.99) if dmg_b > 0.0 else 0.0
+                        new_pairs.append((x_pair, w_b * surv_b))
 
             if not new_pairs:
                 d["count"] = 0

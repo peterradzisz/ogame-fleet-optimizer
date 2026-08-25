@@ -217,3 +217,97 @@ def test_fast_path_tracks_rust_core_on_clean_spike():
         f"LF survivors diverge: rust={rust_lf} fast={fast_lf} "
         f"(overkill handling mismatch)"
     )
+
+
+# ---------------------------------------------------------------------------
+# Regression: shield-bounce annihilation (2026-08-25).
+#
+# A single espionage probe (atk 1) firing into a shielded stack (LF shield
+# 10, HF shield 25) produced dmg_b == 0.0 in the exact single-stream path
+# of _fire; the old `surv_b > 1e-12 and dmg_b > 0.0` gate dropped the
+# alive-but-undamaged bin, the empty-lineage fallback then annihilated the
+# WHOLE stack, and the "dead" defenders never returned fire, so the probe
+# "won" (winner == "Attacker", def_surv == {}) and simulate_batch credited
+# the fleet's full value as destroyed (mean_defender_loss == 2,000,000,
+# debris_total == 600,300 for 500 LFs). Fixed in fast_combat._fire: a bin
+# with surv_b > 0 and dmg_b == 0 (every shot shield-absorbed) is now
+# appended at x = 0.0 instead of being dropped.
+# ---------------------------------------------------------------------------
+
+
+def test_probe_vs_500_lf_no_phantom_wipe():
+    """1 probe vs 500 LF: probe dies R1, LFs survive, no LF debris."""
+    r = simulate_combat_fast(
+        {"espionage_probe": 1}, {"light_fighter": 500}, {},
+        (0, 0, 0), (0, 0, 0), seed=42,
+    )
+    assert r["winner"] in ("Defender", "Draw"), r["winner"]
+    # The probe must die (500 LF x 50 atk, RF 5 vs probe).
+    assert not r["attacker_survivors"], r["attacker_survivors"]
+    # All 500 LFs bounce the single 1-dmg probe shot. >= 495 allows a
+    # sliver of rounding noise but NOT the pre-fix full wipe to 0.
+    lf = r["defender_survivors"].get("light_fighter", 0)
+    assert lf >= 495, lf
+    # Debris must come from the probe only (~300 crystal), never the LFs
+    # (pre-fix: 600,300 total = 600k phantom LF debris).
+    from ogame_optimizer.core.fast_combat import calculate_debris
+    db = calculate_debris(
+        {"espionage_probe": 1}, r["attacker_survivors"],
+        {"light_fighter": 500}, r["defender_survivors"],
+    )
+    assert db["debris_metal"] == 0, db
+    assert 0 < db["debris_crystal"] <= 300, db
+
+
+def test_probe_vs_hf_cr_no_phantom_wipe():
+    """1 probe vs 100 HF + 20 CR: HF survives, cruisers fully intact."""
+    r = simulate_combat_fast(
+        {"espionage_probe": 1}, {"heavy_fighter": 100, "cruiser": 20}, {},
+        (0, 0, 0), (0, 0, 0), seed=42,
+    )
+    assert r["winner"] in ("Defender", "Draw"), r["winner"]
+    assert not r["attacker_survivors"], r["attacker_survivors"]
+    hf = r["defender_survivors"].get("heavy_fighter", 0)
+    cr = r["defender_survivors"].get("cruiser", 0)
+    # Pre-fix: the HF stack was fully annihilated by the bounced shot.
+    assert hf >= 80, hf
+    assert cr == 20, cr
+
+
+def test_probe_scenarios_public_batch_wrapper_no_phantom_loss():
+    """combat.simulate_batch (public wrapper) on the probe scenarios.
+
+    Pre-fix: mean_defender_loss == 2,000,000 (full LF value credited as
+    destroyed because def_surv was empty) and debris_total == 600,300.
+    """
+    from ogame_optimizer.core.combat import simulate_batch
+
+    b1 = simulate_batch(
+        {"espionage_probe": 1}, {"light_fighter": 500}, {},
+        (0, 0, 0), (0, 0, 0), n_sims=1, base_seed=42,
+    )
+    # At most the probe's own value (1000 crystal) may be lost.
+    assert b1["mean_defender_loss"] <= 1000, b1["mean_defender_loss"]
+    assert b1["win_probability"] == 0.0
+    assert b1["debris_total"] <= 300, b1["debris_total"]
+
+    b2 = simulate_batch(
+        {"espionage_probe": 1}, {"heavy_fighter": 100, "cruiser": 20}, {},
+        (0, 0, 0), (0, 0, 0), n_sims=1, base_seed=42,
+    )
+    assert b2["mean_defender_loss"] <= 1000, b2["mean_defender_loss"]
+    assert b2["win_probability"] == 0.0
+
+
+def test_probe_vs_500_lf_stable_across_seeds():
+    """The phantom Attacker win must not reappear on other seeds."""
+    for seed in (0, 1, 7, 123, 9999):
+        r = simulate_combat_fast(
+            {"espionage_probe": 1}, {"light_fighter": 500}, {},
+            (0, 0, 0), (0, 0, 0), seed=seed,
+        )
+        assert r["winner"] in ("Defender", "Draw"), (seed, r["winner"])
+        assert r["defender_survivors"].get("light_fighter", 0) >= 495, (
+            seed, r["defender_survivors"]
+        )
+        assert not r["attacker_survivors"], (seed, r["attacker_survivors"])
