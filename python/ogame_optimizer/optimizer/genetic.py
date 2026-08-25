@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Optional
 
 from ogame_optimizer.core.combat import evaluate_population
+from ogame_optimizer.core.fast_combat import evaluate_population_fast, should_use_fast
 from ogame_optimizer.core.fleet import resource_preference_penalty
 from ogame_optimizer.core.fleet import SHIPS_COST, fleet_value
 from ogame_optimizer.optimizer.statistics import CRNManager
@@ -324,6 +325,7 @@ def _evaluate_population_with_crn(
     preference_beta: float = 0.0,
     min_gain_pct: float = 0.0,
     base_fleet: Optional[Dict[str, int]] = None,
+    deadline: Optional[float] = None,
 ) -> List[float]:
     """Evaluate all fleets in population using CRN (same base_seed for all).
 
@@ -335,6 +337,11 @@ def _evaluate_population_with_crn(
     caller sets to the additional budget). The anti-camping under-budget
     penalty is disabled in this mode because a valid answer can be "build
     nothing" (the base fleet already wins).
+
+    When ``deadline`` (absolute time.time()) is set, fleets are evaluated one
+    batch at a time and the loop stops once the deadline passes; un-evaluated
+    fleets get fitness ``-inf`` so they are never selected as best. The
+    returned list always has len(population_fleets) entries (zip-aligned).
     """
     # Build the fleets actually sent into combat.
     if base_fleet:
@@ -348,17 +355,48 @@ def _evaluate_population_with_crn(
     else:
         combat_fleets = population_fleets
 
-    results = evaluate_population(
-        attacker_fleets=combat_fleets,
-        defender=enemy_fleet,
-        defender_defenses=enemy_defenses,
-        attacker_tech=attacker_tech,
-        defender_tech=enemy_tech,
-        n_sims_per_fleet=n_sims,
-        base_seed=base_seed,
-    )
+    # Evaluate one fleet per batch so a mid-generation deadline can interrupt
+    # between fleets (a whole-population batch would overshoot by up to one
+    # full generation). Per-fleet seed streams are preserved EXACTLY:
+    #   - fast path: fleet i's batch base_seed was base_seed + i*7919
+    #     (evaluate_population_fast), so passing that as the slice's base_seed
+    #     yields identical per-sim seeds.
+    #   - Rust path: sim seeds were base_seed + (i*n_sims + s) (lib.rs
+    #     evaluate_population_py), so passing base_seed + i*n_sims as the
+    #     slice's base_seed yields identical seeds.
+    # Path dispatch replicates combat.evaluate_population: if ANY fleet needs
+    # the fast resolver, ALL fleets use it (mixed-size populations must not
+    # change path depending on how the population happens to be sliced).
+    _any_fast = any(should_use_fast(f, enemy_fleet, enemy_defenses) for f in combat_fleets)
+    results = []
+    for i, fleet in enumerate(combat_fleets):
+        if deadline is not None and time.time() > deadline:
+            # Deadline hit: pad remaining fleets with a None sentinel so the
+            # scoring loop assigns them -inf (never selected as best) while
+            # keeping the returned list zip-aligned with population_fleets.
+            results.extend([None] * (len(combat_fleets) - len(results)))
+            break
+        if _any_fast:
+            results.extend(evaluate_population_fast(
+                [fleet], enemy_fleet, enemy_defenses,
+                attacker_tech, enemy_tech, n_sims, base_seed + i * 7919,
+            ))
+        else:
+            results.extend(evaluate_population(
+                attacker_fleets=[fleet],
+                defender=enemy_fleet,
+                defender_defenses=enemy_defenses,
+                attacker_tech=attacker_tech,
+                defender_tech=enemy_tech,
+                n_sims_per_fleet=n_sims,
+                base_seed=base_seed + i * n_sims,
+            ))
     fitnesses = []
     for i, r in enumerate(results):
+        if r is None:
+            # Un-evaluated (deadline hit before this fleet's batch).
+            fitnesses.append(float("-inf"))
+            continue
         mean_loss = r.get("mean_attacker_loss", 0)
         win_prob = r.get("win_probability", 0)
         enemy_loss = r.get("mean_defender_loss", 0)  # 0 on the Rust small-fleet path
@@ -448,6 +486,12 @@ def genetic_optimize(
         drift_bounds = _drift_bounds_for_seed(seed_fleet, budget=budget)
 
     t0 = time.time()
+    # Absolute deadline for the whole run. The while-loop below only checks
+    # BETWEEN generations; the deadline is additionally enforced MID-eval (per
+    # fleet batch) inside _evaluate_population_with_crn so a single generation
+    # (pop 20-30 x 20+ sims at ~18ms/sim = 16-30s) cannot overshoot the
+    # budget by a full generation.
+    deadline = t0 + config.time_budget_seconds
     rng = random.Random(base_seed)
     crn = CRNManager(base_seed)
     mode_enum = ObjectiveMode(mode) if isinstance(mode, str) else mode
@@ -478,6 +522,7 @@ def genetic_optimize(
             preference_beta=preference_beta,
             min_gain_pct=min_gain_pct,
             base_fleet=base_fleet,
+            deadline=deadline,
         )
         total_evals += len(fitnesses)
         last_fitnesses = fitnesses
@@ -487,6 +532,12 @@ def genetic_optimize(
             if f > best_fitness:
                 best_fitness = f
                 best_chrom = list(c)
+
+        # Deadline guard: don't breed another generation if its evaluation
+        # would immediately hit the deadline (everything past fleet 0 would be
+        # -inf padding — harmless but wasted work).
+        if time.time() > deadline:
+            break
 
         # Create next generation
         pop_with_fit = list(zip(fitnesses, population))

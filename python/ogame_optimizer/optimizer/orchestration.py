@@ -121,6 +121,7 @@ def _sensitivity_analysis(
     loss_scale: float = 1.0,
     resource_weights: tuple = (1.0, 1.0, 1.0),
     preference_beta: float = 0.0,
+    max_total_seconds: Optional[float] = None,
 ) -> Dict[str, Dict]:
     """For each ship in fleet, measure impact of removing it (redistribute to best remaining).
 
@@ -170,6 +171,35 @@ def _sensitivity_analysis(
         base_per_type = {s: fleet.get(s, 0) - base_survivors.get(s, 0) for s in fleet}
     except Exception:
         pass
+
+    # Adaptive n_sims: at scale (1.2M-unit enemies) one sim costs ~18ms, so a
+    # flat 200 sims x 13 types = ~47s. Probe the per-sim cost once and shrink
+    # n_sims so the whole per-type loop fits inside max_total_seconds.
+    if max_total_seconds is not None:
+        try:
+            _probe_t0 = time.time()
+            simulate_batch(
+                attacker=fleet,
+                defender=enemy_fleet,
+                defender_defenses=enemy_defenses,
+                attacker_tech=attacker_tech,
+                defender_tech=enemy_tech,
+                n_sims=3,
+                base_seed=base_seed + 77000,
+                debris_pct=debris_pct,
+                deuterium_in_debris=deuterium_in_debris,
+            )
+            _per_sim = (time.time() - _probe_t0) / 3.0
+            if _per_sim > 1e-6:
+                _n_types = len(present_ships)
+                _n_eff = max(30, min(n_sims, int(max_total_seconds / (_n_types * _per_sim))))
+                _log.info(
+                    "Sensitivity: per_sim=%.1fms -> n_sims %d -> %d for %d types (cap %.1fs)",
+                    _per_sim * 1000.0, n_sims, _n_eff, _n_types, max_total_seconds,
+                )
+                n_sims = _n_eff
+        except Exception:
+            pass  # probe failed -> keep n_sims as-is
 
     analysis = {}
     for idx, ship in enumerate(present_ships):
@@ -897,6 +927,7 @@ def optimize(
             base_fleet=base_fleet if base_fleet else None,
             loss_scale=_loss_scale, resource_weights=resource_weights,
             preference_beta=preference_beta,
+            max_total_seconds=20.0,
         )
         _pruned, _pruned_names = _prune_dead_weight(ga_result.best_fleet, _prune_sens)
         if _pruned and sum(_pruned.values()) > 0:
@@ -1055,6 +1086,7 @@ def optimize(
         base_fleet=base_fleet if base_fleet else None,
         loss_scale=_loss_scale, resource_weights=resource_weights,
         preference_beta=preference_beta,
+        max_total_seconds=20.0,
     )
 
     # Compute per-ship survival rates (for shield marker in UI) using the
