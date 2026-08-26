@@ -182,6 +182,13 @@ def run_optimize(req: OptimizeRequest) -> OptimizeResponse:
             base_fleet_cost=result.base_fleet_cost,
             base_fleet_count=result.base_fleet_count,
             recommended_additions=result.recommended_additions,
+            fleet_cost_metal=result.fleet_cost_metal,
+            fleet_cost_crystal=result.fleet_cost_crystal,
+            fleet_cost_deuterium=result.fleet_cost_deuterium,
+            additions_cost_metal=result.additions_cost_metal,
+            additions_cost_crystal=result.additions_cost_crystal,
+            additions_cost_deuterium=result.additions_cost_deuterium,
+            kill_estimates=result.kill_estimates,
         )
     except ValueError as e:
         _log.warning("Optimize validation error: %s", e)

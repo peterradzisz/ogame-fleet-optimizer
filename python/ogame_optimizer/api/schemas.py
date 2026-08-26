@@ -170,6 +170,14 @@ class OptimizeResponse(BaseModel):
     base_fleet_cost: int = 0
     base_fleet_count: int = 0
     recommended_additions: Dict[str, int] = Field(default_factory=dict)
+    # Costs & kills transparency
+    fleet_cost_metal: int = 0
+    fleet_cost_crystal: int = 0
+    fleet_cost_deuterium: int = 0
+    additions_cost_metal: int = 0
+    additions_cost_crystal: int = 0
+    additions_cost_deuterium: int = 0
+    kill_estimates: Dict[str, Dict] = Field(default_factory=dict)
 
 
 class CombatRequest(BaseModel):

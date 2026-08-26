@@ -11,6 +11,7 @@ from typing import Dict, List, Optional
 from ogame_optimizer.logging_config import get_logger
 from ogame_optimizer.core.combat import simulate_batch
 from ogame_optimizer.core.fleet import compute_budget, SHIPS_COST, weighted_fleet_value, resource_preference_penalty, fleet_value
+from ogame_optimizer.core.fast_combat import RAPIDFIRE, SHIP_STATS, DEFENSE_STATS
 from ogame_optimizer.optimizer.greedy import greedy_optimize
 from ogame_optimizer.optimizer.genetic import genetic_optimize, _drift_bounds_for_seed
 
@@ -31,6 +32,124 @@ def _merge_fleet(base: Dict[str, int], additions: Dict[str, int]) -> Dict[str, i
         if v > 0:
             merged[k] = merged.get(k, 0) + v
     return merged
+
+
+def _resource_split(fleet: Dict[str, int]) -> tuple[int, int, int]:
+    """Split a fleet's total cost into (metal, crystal, deuterium).
+
+    Uses ``SHIPS_COST``; ship keys missing from the table contribute 0
+    (defensive - optimizer fleets only contain known keys). By construction
+    the three components sum to ``fleet_value(fleet)``.
+    """
+    metal = crystal = deuterium = 0
+    for ship, count in fleet.items():
+        cost = SHIPS_COST.get(ship)
+        if cost and count > 0:
+            metal += cost[0] * count
+            crystal += cost[1] * count
+            deuterium += cost[2] * count
+    return metal, crystal, deuterium
+
+
+def _compute_kill_estimates(
+    recommended_fleet: Dict[str, int],
+    enemy_fleet: Dict[str, int],
+    attribution_mean: Dict[str, Dict[str, float]],
+    enemy_defenses: Dict[str, int],
+    enemy_tech: tuple,
+    attacker_tech: tuple,
+    defender_fleet_analysis: Dict[str, Dict[str, float]],
+) -> Dict[str, Dict]:
+    """Estimate per-attacker-ship kills, cost-per-kill and damage share.
+
+    Primary source: the engine's per-pair attribution matrix
+    (``attribution_mean[atk][def]`` = mean damage attributed by the
+    analytical engine). When the engine did not produce one (Rust path /
+    small fleets), fall back to a static damage-potential heuristic:
+
+        potential = count_atk * atk(tech-adjusted) * rf_mult
+        rf_mult   = RAPIDFIRE[(atk, def)] for RF pairs, else 1 (engine
+                    convention: an RF pair fires ~rf shots per volley vs a
+                    pure target; a no-RF pair still fires once - a raw x0
+                    for non-RF pairs would zero out most columns)
+        bounce    = shot < 1% of the defender's tech-adjusted shield -> 0
+                    (OGame shield-bounce rule, mirrors fast_combat._fire)
+
+    Kills are attributed column-normalized: each defender FLEET type's
+    ``destroyed_count`` is split across attacker types proportionally to
+    their potential against that type. Zero-division guards: a defender
+    type whose column total is 0 contributes no kills to any attacker; an
+    attacker with ``kills_est == 0`` gets ``cost_per_kill = None``. All
+    rows are estimates either way (the UI labels both sources identically).
+    """
+    atk_types = [s for s, c in recommended_fleet.items() if c > 0]
+    if not atk_types:
+        return {}
+
+    def_fleet_types = [d for d, c in enemy_fleet.items() if c > 0]
+    def_all = def_fleet_types + [d for d, c in (enemy_defenses or {}).items() if c > 0]
+    if not def_all:
+        return {s: {"kills_est": 0.0, "cost_per_kill": None, "damage_share": 0.0}
+                for s in atk_types}
+
+    # --- Damage potential per (atk, def) pair --------------------------------
+    potential: Dict[str, Dict[str, float]] = {s: {d: 0.0 for d in def_all} for s in atk_types}
+    if attribution_mean:
+        for s in atk_types:
+            row = attribution_mean.get(s) or {}
+            for d in def_all:
+                try:
+                    potential[s][d] = float(row.get(d, 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    potential[s][d] = 0.0
+    else:
+        # Heuristic fallback (no engine attribution matrix available).
+        atk_mult = 1.0 + (attacker_tech[0] if attacker_tech else 0) * 0.1
+        shield_mult = 1.0 + (enemy_tech[1] if len(enemy_tech) > 1 else 0) * 0.1
+        for s in atk_types:
+            stats = SHIP_STATS.get(s)
+            if not stats:
+                continue
+            count_s = recommended_fleet[s]
+            per_shot = stats["atk"] * atk_mult
+            for d in def_all:
+                d_stats = SHIP_STATS.get(d) or DEFENSE_STATS.get(d)
+                if not d_stats:
+                    continue
+                if per_shot < d_stats["shield"] * shield_mult * 0.01:
+                    continue  # shield bounce: shot fully absorbed
+                rf = RAPIDFIRE.get((s, d), 0)
+                mult = rf if rf > 1 else 1
+                potential[s][d] = count_s * per_shot * mult
+
+    # Column totals (per defender type, across attacker types) and row
+    # damage totals (per attacker, across ALL def types incl. defenses).
+    col_total = {d: sum(potential[s][d] for s in atk_types) for d in def_all}
+    row_total = {s: sum(potential[s].values()) for s in atk_types}
+    grand_total = sum(row_total.values())
+
+    result: Dict[str, Dict] = {}
+    for s in atk_types:
+        kills_est = 0.0
+        for d in def_fleet_types:
+            entry = defender_fleet_analysis.get(d) or {}
+            try:
+                destroyed = int(entry.get("destroyed_count", 0))
+            except (TypeError, ValueError):
+                destroyed = 0
+            if destroyed <= 0:
+                continue
+            col = col_total.get(d, 0.0)
+            if col <= 0.0:
+                continue  # bounced / no-potential column: contributes 0
+            kills_est += (potential[s][d] / col) * destroyed
+        ship_total_cost = sum(SHIPS_COST.get(s, (0, 0, 0))) * recommended_fleet[s]
+        result[s] = {
+            "kills_est": float(kills_est),
+            "cost_per_kill": (ship_total_cost / kills_est) if kills_est > 0 else None,
+            "damage_share": (row_total[s] / grand_total) if grand_total > 0 else 0.0,
+        }
+    return result
 
 
 @dataclass
@@ -83,6 +202,16 @@ class OptimizationResult:
     base_fleet_cost: int = 0
     base_fleet_count: int = 0
     recommended_additions: Dict[str, int] = field(default_factory=dict)
+    # Costs & kills transparency: per-resource cost splits of the recommended
+    # fleet (merged, = fleet_value split by M/C/D) and of the additions line,
+    # plus per-attacker-ship kill attribution estimates.
+    fleet_cost_metal: int = 0
+    fleet_cost_crystal: int = 0
+    fleet_cost_deuterium: int = 0
+    additions_cost_metal: int = 0
+    additions_cost_crystal: int = 0
+    additions_cost_deuterium: int = 0
+    kill_estimates: Dict[str, Dict] = field(default_factory=dict)
 
 
 def _validate_inputs(
@@ -498,6 +627,7 @@ def optimize(
             # Build a minimal result with just the base fleet
             t_done = time.time()
             _base_fv = fleet_value(base_fleet)
+            _base_cost_split = _resource_split(base_fleet)
             _base_raw_loss = float(_base_check.get("mean_attacker_loss", 0))
             _base_stddev = float(_base_check.get("stddev_attacker_loss", 0))
             _base_pen = resource_preference_penalty(base_fleet, resource_weights, preference_beta)
@@ -552,6 +682,7 @@ def optimize(
                         _def_analysis[_ship] = {
                             "count": _count,
                             "surviving_count": round(_surv),
+                            "destroyed_count": int(_count - round(_surv)),
                             "survival_pct": _surv_pct,
                         }
             except Exception:
@@ -600,6 +731,7 @@ def optimize(
                     _d: {
                         'count': _c,
                         'surviving_count': round(float(_base_check.get('defender_defense_survivors_mean', {}).get(_d, 0))),
+                        'destroyed_count': int(_c - round(float(_base_check.get('defender_defense_survivors_mean', {}).get(_d, 0)))),
                         'survival_pct': round(float(_base_check.get('defender_defense_survivors_mean', {}).get(_d, 0)) / _c * 100, 1),
                     }
                     for _d, _c in enemy_defenses.items() if _c > 0
@@ -608,6 +740,13 @@ def optimize(
                 base_fleet_cost=base_cost,
                 base_fleet_count=base_count,
                 recommended_additions={},
+                fleet_cost_metal=_base_cost_split[0],
+                fleet_cost_crystal=_base_cost_split[1],
+                fleet_cost_deuterium=_base_cost_split[2],
+                additions_cost_metal=0,
+                additions_cost_crystal=0,
+                additions_cost_deuterium=0,
+                kill_estimates={},
             )
 
     # --- Refine-seed normalisation (before Phase A adopts it) ---
@@ -1117,6 +1256,7 @@ def optimize(
                 defender_fleet_analysis[_ship] = {
                     "count": _count,
                     "surviving_count": round(_surv),
+                    "destroyed_count": int(_count - round(_surv)),
                     "survival_pct": _surv_pct,
                 }
     except Exception:
@@ -1133,10 +1273,31 @@ def optimize(
                 defender_defense_analysis[_def] = {
                     "count": _count,
                     "surviving_count": round(_surv),
+                    "destroyed_count": int(_count - round(_surv)),
                     "survival_pct": _surv_pct,
                 }
     except Exception:
         pass
+
+    # Costs & kills transparency: cost splits + kill attribution estimates.
+    # attribution_mean comes from the analytical engine (absent on the Rust
+    # path / small fleets - the heuristic fallback inside covers those).
+    _fleet_cost_split = _resource_split(ga_result.best_fleet)
+    _recommended_additions = (
+        {s: max(0, ga_result.best_fleet.get(s, 0) - base_fleet.get(s, 0))
+         for s in ga_result.best_fleet
+         if ga_result.best_fleet.get(s, 0) > base_fleet.get(s, 0)}
+    ) if base_fleet else dict(ga_result.best_fleet)
+    _additions_cost_split = _resource_split(_recommended_additions)
+    _kill_estimates = _compute_kill_estimates(
+        recommended_fleet=ga_result.best_fleet,
+        enemy_fleet=enemy_fleet,
+        attribution_mean=final.get("attribution_mean", {}) or {},
+        enemy_defenses=enemy_defenses,
+        enemy_tech=enemy_tech,
+        attacker_tech=attacker_tech,
+        defender_fleet_analysis=defender_fleet_analysis,
+    )
 
     return OptimizationResult(
         recommended_fleet=ga_result.best_fleet,
@@ -1184,11 +1345,14 @@ def optimize(
         base_fleet=base_fleet if base_fleet else {},
         base_fleet_cost=base_cost,
         base_fleet_count=base_count,
-        recommended_additions=(
-            {s: max(0, ga_result.best_fleet.get(s, 0) - base_fleet.get(s, 0))
-             for s in ga_result.best_fleet
-             if ga_result.best_fleet.get(s, 0) > base_fleet.get(s, 0)}
-        ) if base_fleet else dict(ga_result.best_fleet),
+        recommended_additions=_recommended_additions,
+        fleet_cost_metal=_fleet_cost_split[0],
+        fleet_cost_crystal=_fleet_cost_split[1],
+        fleet_cost_deuterium=_fleet_cost_split[2],
+        additions_cost_metal=_additions_cost_split[0],
+        additions_cost_crystal=_additions_cost_split[1],
+        additions_cost_deuterium=_additions_cost_split[2],
+        kill_estimates=_kill_estimates,
     )
 
 
