@@ -202,10 +202,18 @@ def simulate_batch(
     Returns dict with ``mean_attacker_loss``, ``stddev_attacker_loss``,
     ``mean_defender_loss``, ``win_probability``, ``wins``, ``losses``,
     ``draws``, ``sims_run``, ``seed_used``.
+
+    On the fast (analytical) path only, the result also carries
+    ``attribution_mean`` (per shooter->target mean damage potential);
+    the Rust path has no such hook, so the key is absent there.
     """
-    # Fast path for large fleets
+    # Fast path for large fleets. want_attribution=True adds
+    # "attribution_mean" ({shooter: {target: mean damage potential}}) to
+    # the result; the Rust path below has no such hook, so the key stays
+    # ABSENT there and orchestration falls back to its heuristic.
     if should_use_fast(attacker, defender, defender_defenses):
-        return simulate_batch_fast(attacker, defender, defender_defenses, attacker_tech, defender_tech, int(n_sims), int(base_seed), debris_pct=debris_pct, deuterium_in_debris=deuterium_in_debris)
+        fast = simulate_batch_fast(attacker, defender, defender_defenses, attacker_tech, defender_tech, int(n_sims), int(base_seed), debris_pct=debris_pct, deuterium_in_debris=deuterium_in_debris, want_attribution=True)
+        return fast
     result = _translate_result(_rust.simulate_batch_py(
         _normalize_ship_keys(_strip_unknown_for_rust(attacker)),
         _normalize_ship_keys(_strip_unknown_for_rust(defender)),

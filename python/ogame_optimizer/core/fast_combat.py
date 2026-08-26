@@ -306,7 +306,8 @@ _SQRT2 = math.sqrt(2.0)
 _SQRT2PI = math.sqrt(2.0 * math.pi)
 
 
-def _fire(attacker_side: dict, defender_side: dict, rng: random.Random):
+def _fire(attacker_side: dict, defender_side: dict, rng: random.Random,
+          attribution: Optional[dict] = None, side: str = "A"):
     """Grouped fire with per-shot overkill handling.
 
     All attacker types' fire against each defender type is resolved in one
@@ -324,6 +325,14 @@ def _fire(attacker_side: dict, defender_side: dict, rng: random.Random):
     f, A's continuation probability is f*(N-1)/N, so its expected shot
     multiplier is 1 / (1 - sum_f (N-1)/N) = N for a pure target. This
     matches the Rust core and ogamespec.
+
+    Damage-potential attribution: when ``attribution`` is a dict, each
+    surviving (shooter, target) pair adds its pre-mitigation potential to
+    ``attribution[(side, k_atk, k_def)]`` - chip streams add
+    ``aimed * per_shot``, spike shots add ``aimed * unit_eff_hp``
+    (hull-equivalent units). ``side`` ("A"/"D") disambiguates the shooter's
+    battle side across the two per-round calls. Pure bookkeeping: no rng
+    consumption, no effect on the resolution below.
     """
     # Sub-stepped fire resolution (Rust sequential-fire parity). Real
     # OGame fire is sequential: defenders dying mid-round concentrate the
@@ -379,6 +388,19 @@ def _fire(attacker_side: dict, defender_side: dict, rng: random.Random):
                     continue
                 if aimed < 0.5:
                     continue
+                if attribution is not None:
+                    # Damage-potential attribution (UI Costs & Kills
+                    # transparency): what this shooter type would land on
+                    # this target type BEFORE shield-strip / A3 2-moment /
+                    # heavy-overlay reductions. The realized damage is a
+                    # fraction of this but proportional across shooter
+                    # types, so damage-share attribution stays unbiased.
+                    _akey = (side, k_atk, k_def)
+                    attribution[_akey] = attribution.get(_akey, 0.0) + (
+                        aimed * unit_eff_hp
+                        if per_shot >= unit_eff_hp
+                        else aimed * per_shot
+                    )
                 if per_shot >= unit_eff_hp:
                     spike_kills += aimed
                 else:
@@ -728,13 +750,21 @@ def simulate_combat_fast(
     attacker_tech: Tuple[int, int, int] = (0, 0, 0),
     defender_tech: Tuple[int, int, int] = (0, 0, 0),
     seed: int = 42,
+    want_attribution: bool = False,
 ) -> dict:
-    """Analytical combat simulation. Same return format as Rust simulate_combat."""
+    """Analytical combat simulation. Same return format as Rust simulate_combat.
+
+    With ``want_attribution=True`` the result additionally carries
+    ``"attribution"``: raw per-sim damage-potential sums keyed
+    ``(side, shooter_type, target_type)`` with side "A" for attacker-fired
+    and "D" for defender-fired volleys (see ``_fire``).
+    """
     defender_defenses = defender_defenses or {}
     rng = random.Random(seed)
 
     atk_side = _make_side(attacker, {}, attacker_tech)
     def_side = _make_side(defender, defender_defenses, defender_tech)
+    attribution = {} if want_attribution else None
 
     rounds_fought = 0
     stalemate = False
@@ -756,8 +786,8 @@ def simulate_combat_fast(
         # this directly: the second call reads the defender's post-volley
         # counts/damage. (The old snapshot/restore dance made both sides
         # fire at full start-of-round strength, overstating defenders.)
-        _fire(atk_side, def_side, rng)
-        _fire(def_side, atk_side, rng)
+        _fire(atk_side, def_side, rng, attribution, "A")
+        _fire(def_side, atk_side, rng, attribution, "D")
 
         # Check for stalemate (no damage either side)
         atk_after = sum(u["count"] for u in atk_side.values())
@@ -800,7 +830,7 @@ def simulate_combat_fast(
         # 'winning' vs 50k BCs despite bouncing off their shields).
         winner = "Draw"
 
-    return {
+    result = {
         "winner": winner,
         "rounds_fought": rounds_fought,
         "attacker_survivors": atk_surv,
@@ -809,6 +839,9 @@ def simulate_combat_fast(
         "debris_metal": 0,  # Updated below with actual values
         "debris_crystal": 0,
     }
+    if want_attribution:
+        result["attribution"] = attribution
+    return result
 
 
 def simulate_batch_fast(
@@ -821,8 +854,14 @@ def simulate_batch_fast(
     base_seed: int = 42,
     debris_pct: float = DEFAULT_DEBRIS_PCT,
     deuterium_in_debris: bool = False,
+    want_attribution: bool = False,
 ) -> dict:
-    """Run N analytical sims and return aggregate stats (same format as Rust batch)."""
+    """Run N analytical sims and return aggregate stats (same format as Rust batch).
+
+    With ``want_attribution=True`` the result additionally carries
+    ``"attribution_mean"``: ``{shooter_ship: {target_ship: mean_potential}}``
+    - the per-sim raw damage-potential sums (see ``_fire``) averaged over
+    all sims, reduced to ATTACKER-side entries only. Absent when False."""
     from ogame_optimizer.core.fleet import SHIPS_COST
 
     atk_value = sum(sum(SHIPS_COST.get(k, (0, 0, 0))) * v for k, v in attacker.items())
@@ -839,13 +878,20 @@ def simulate_batch_fast(
     atk_surv_sum: dict = defaultdict(float)
     def_surv_sum: dict = defaultdict(float)
     def_def_surv_sum: dict = defaultdict(float)
+    # Raw damage-potential sums keyed (side, shooter, target), accumulated
+    # across sims when want_attribution (see _fire).
+    attribution_sum: dict = defaultdict(float)
 
     for i in range(n_sims):
         r = simulate_combat_fast(
             attacker, defender, defender_defenses,
             attacker_tech, defender_tech,
             seed=base_seed + i,
+            want_attribution=want_attribution,
         )
+        if want_attribution:
+            for _key, _v in (r.get("attribution") or {}).items():
+                attribution_sum[_key] += _v
         surv_value = sum(
             sum(SHIPS_COST.get(k, (0, 0, 0))) * v
             for k, v in r["attacker_survivors"].items()
@@ -890,7 +936,7 @@ def simulate_batch_fast(
     stddev = math.sqrt(variance)
     mean_def_loss = sum(def_losses) / n_sims if n_sims > 0 else 0
 
-    return {
+    result = {
         "mean_attacker_loss": mean_loss,
         "stddev_attacker_loss": stddev,
         "mean_defender_loss": mean_def_loss,
@@ -908,6 +954,18 @@ def simulate_batch_fast(
         "defender_survivors_mean": {s: n / n_sims for s, n in def_surv_sum.items()},
         "defender_defense_survivors_mean": {s: n / n_sims for s, n in def_def_surv_sum.items()},
     }
+    if want_attribution:
+        # Mean damage-potential per (side, shooter, target) across sims,
+        # then keep ONLY the attacker-side entries as
+        # {shooter_ship: {target_ship: mean_potential}} (the UI Costs &
+        # Kills view is attacker-centric; defender-side keys are dropped).
+        attribution_mean: dict = {}
+        for (_side, _shooter, _target), _v in attribution_sum.items():
+            if _side != "A":
+                continue
+            attribution_mean.setdefault(_shooter, {})[_target] = _v / n_sims
+        result["attribution_mean"] = attribution_mean
+    return result
 
 
 def evaluate_population_fast(

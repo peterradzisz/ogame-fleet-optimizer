@@ -311,3 +311,107 @@ def test_probe_vs_500_lf_stable_across_seeds():
             seed, r["defender_survivors"]
         )
         assert not r["attacker_survivors"], (seed, r["attacker_survivors"])
+
+
+# ---------------------------------------------------------------------------
+# Damage-attribution accumulator (UI Costs & Kills transparency).
+# The per-(shooter -> target) potential bookkeeping added to _fire must be
+# RNG-INVARIANT: it consumes no rng draws and reorders none, so batch
+# statistics stay byte-identical with the accumulator on or off. Anchors
+# below were recorded BEFORE the change (PYTHONHASHSEED=0, venv python).
+# ---------------------------------------------------------------------------
+
+_DUEL_ATK_LOSS_BEFORE = 0.0
+_DUEL_DEF_LOSS_BEFORE = 25500000.0
+_DUEL_DEBRIS_TOTAL_BEFORE = 6300000
+
+
+def _duel_batch(**kwargs):
+    from ogame_optimizer.core.fast_combat import simulate_batch_fast
+
+    return simulate_batch_fast(
+        {"reaper": 300}, {"battlecruiser": 300}, {},
+        (0, 0, 0), (0, 0, 0), n_sims=50, base_seed=42, **kwargs
+    )
+
+
+def test_attribution_rng_invariance_duel_anchor():
+    """Duel headline stats are byte-identical to the pre-attribution values."""
+    r = _duel_batch()
+    assert repr(r["mean_attacker_loss"]) == repr(_DUEL_ATK_LOSS_BEFORE)
+    assert repr(r["mean_defender_loss"]) == repr(_DUEL_DEF_LOSS_BEFORE)
+    assert repr(r["debris_total"]) == repr(_DUEL_DEBRIS_TOTAL_BEFORE)
+    assert r["attacker_survivors_mean"] == {"reaper": 300.0}
+    assert r["defender_survivors_mean"] == {}
+    # "attribution_mean" absent unless requested
+    assert "attribution_mean" not in r
+
+
+def test_attribution_mean_present_only_when_requested():
+    """Same call with want_attribution=True exposes the matrix; stats unchanged."""
+    r_on = _duel_batch(want_attribution=True)
+    assert "attribution_mean" in r_on
+    am = r_on["attribution_mean"]
+    assert set(am.keys()) == {"reaper"}
+    assert set(am["reaper"].keys()) == {"battlecruiser"}
+    assert am["reaper"]["battlecruiser"] > 0.0
+    # RNG invariance: accumulator on must not move any headline stat.
+    assert repr(r_on["mean_attacker_loss"]) == repr(_DUEL_ATK_LOSS_BEFORE)
+    assert repr(r_on["mean_defender_loss"]) == repr(_DUEL_DEF_LOSS_BEFORE)
+
+
+def test_attribution_raw_sums_and_side_filtering():
+    """Raw per-sim sums key (side, shooter, target); batch keeps side A only."""
+    from ogame_optimizer.core.fast_combat import simulate_combat_fast, simulate_batch_fast
+
+    # Cruiser vs BC: both sides land hits -> both A and D raw entries.
+    s = simulate_combat_fast(
+        {"cruiser": 100}, {"battlecruiser": 100}, {},
+        (0, 0, 0), (0, 0, 0), seed=3, want_attribution=True,
+    )
+    raw = s["attribution"]
+    assert ("A", "cruiser", "battlecruiser") in raw
+    assert ("D", "battlecruiser", "cruiser") in raw
+    assert all(v > 0.0 for v in raw.values())
+    # Off by default.
+    s_off = simulate_combat_fast(
+        {"cruiser": 100}, {"battlecruiser": 100}, {}, seed=3
+    )
+    assert "attribution" not in s_off
+
+    # Batch aggregation: nested {shooter: {target: mean}}, A-side entries only.
+    r = simulate_batch_fast(
+        {"cruiser": 100, "reaper": 100},
+        {"light_fighter": 200, "battlecruiser": 100}, {},
+        (0, 0, 0), (0, 0, 0), n_sims=10, base_seed=7,
+        want_attribution=True,
+    )
+    am = r["attribution_mean"]
+    assert set(am.keys()) == {"cruiser", "reaper"}
+    assert set(am["cruiser"].keys()) == {"light_fighter", "battlecruiser"}
+    assert set(am["reaper"].keys()) == {"light_fighter", "battlecruiser"}
+    for shooter, targets in am.items():
+        for target, mean_potential in targets.items():
+            assert mean_potential > 0.0
+
+
+def test_public_batch_fast_path_carries_attribution_mean():
+    """combat.simulate_batch routes >FAST_THRESHOLD fleets to the fast path
+    and includes attribution_mean; small (Rust-path) fleets omit the key."""
+    from ogame_optimizer.core.combat import simulate_batch
+
+    fleet = {"reaper": 300}
+    enemy = {"battlecruiser": 300}
+    assert should_use_fast(fleet, enemy, {}) is True
+    r = simulate_batch(
+        fleet, enemy, {}, (0, 0, 0), (0, 0, 0), n_sims=20, base_seed=42
+    )
+    assert "attribution_mean" in r
+    assert r["attribution_mean"].get("reaper", {}).get("battlecruiser", 0.0) > 0.0
+    # Small fleets take the Rust path: no hook, key absent (fallback signal).
+    small = simulate_batch(
+        {"light_fighter": 20}, {"cruiser": 10}, {}, (0, 0, 0), (0, 0, 0),
+        n_sims=5, base_seed=42,
+    )
+    assert should_use_fast({"light_fighter": 20}, {"cruiser": 10}, {}) is False
+    assert "attribution_mean" not in small
