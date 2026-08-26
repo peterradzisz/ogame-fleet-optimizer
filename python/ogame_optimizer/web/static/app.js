@@ -13,21 +13,22 @@
   const DEFENSE_KEYS = ["rocket_launcher","light_laser","heavy_laser","gauss_cannon","ion_cannon","plasma_turret","small_shield_dome","large_shield_dome"];
 
   // Ship metadata: speed (base), fuel (deut/hour), shield (base)
+  // mcd: [metal, crystal, deuterium] mirrors fleet.py SHIPS_COST; contract: m+c+d == cost
   const SHIP_META = {
-    "light_fighter":   {speed: 12500,  fuel: 20,   shield: 10,    cost: 4000},
-    "heavy_fighter":   {speed: 10000,  fuel: 75,   shield: 25,    cost: 10000},
-    "cruiser":         {speed: 15000,  fuel: 300,  shield: 50,    cost: 29000},
-    "battleship":      {speed: 10000,  fuel: 500,  shield: 200,   cost: 60000},
-    "battlecruiser":   {speed: 10000,  fuel: 250,  shield: 400,   cost: 85000},
-    "bomber":          {speed: 4000,   fuel: 1000, shield: 500,   cost: 90000},
-    "destroyer":       {speed: 5000,   fuel: 1000, shield: 500,   cost: 125000},
-    "deathstar":       {speed: 100,    fuel: 1,    shield: 50000, cost: 10000000},
-    "small_cargo":     {speed: 5000,   fuel: 10,   shield: 10,    cost: 4000},
-    "large_cargo":     {speed: 7500,   fuel: 50,   shield: 25,    cost: 12000},
-    "espionage_probe": {speed: 100000000, fuel: 1, shield: 0,     cost: 1000},
-    "pathfinder":      {speed: 10000,  fuel: 50,   shield: 100,   cost: 22000},
-    "recycler":        {speed: 2000,   fuel: 300,  shield: 10,    cost: 18000},
-    "reaper":          {speed: 7000,   fuel: 100,  shield: 1000,  cost: 140000},
+    "light_fighter":   {speed: 12500,  fuel: 20,   shield: 10,    cost: 4000,      mcd: [3000, 1000, 0]},
+    "heavy_fighter":   {speed: 10000,  fuel: 75,   shield: 25,    cost: 10000,     mcd: [6000, 4000, 0]},
+    "cruiser":         {speed: 15000,  fuel: 300,  shield: 50,    cost: 29000,     mcd: [20000, 7000, 2000]},
+    "battleship":      {speed: 10000,  fuel: 500,  shield: 200,   cost: 60000,     mcd: [45000, 15000, 0]},
+    "battlecruiser":   {speed: 10000,  fuel: 250,  shield: 400,   cost: 85000,     mcd: [30000, 40000, 15000]},
+    "bomber":          {speed: 4000,   fuel: 1000, shield: 500,   cost: 90000,     mcd: [50000, 25000, 15000]},
+    "destroyer":       {speed: 5000,   fuel: 1000, shield: 500,   cost: 125000,    mcd: [60000, 50000, 15000]},
+    "deathstar":       {speed: 100,    fuel: 1,    shield: 50000, cost: 10000000,  mcd: [5000000, 4000000, 1000000]},
+    "small_cargo":     {speed: 5000,   fuel: 10,   shield: 10,    cost: 4000,      mcd: [2000, 2000, 0]},
+    "large_cargo":     {speed: 7500,   fuel: 50,   shield: 25,    cost: 12000,     mcd: [6000, 6000, 0]},
+    "espionage_probe": {speed: 100000000, fuel: 1, shield: 0,     cost: 1000,      mcd: [0, 1000, 0]},
+    "pathfinder":      {speed: 10000,  fuel: 50,   shield: 100,   cost: 31000,     mcd: [8000, 15000, 8000]},
+    "recycler":        {speed: 2000,   fuel: 300,  shield: 10,    cost: 18000,     mcd: [10000, 6000, 2000]},
+    "reaper":          {speed: 7000,   fuel: 100,  shield: 1000,  cost: 160000,    mcd: [85000, 55000, 20000]},
   };
   const DEFENSE_COST = {
     "rocket_launcher": 2000, "light_laser": 2000, "heavy_laser": 8000,
@@ -86,6 +87,10 @@
   function fmtNum(n) {
     if (n === null || n === undefined) return "-";
     return Math.round(n).toLocaleString();
+  }
+  function fmtM(n) {
+    var v = (n == null || isNaN(n)) ? '—' : Math.round(n / 1e6).toLocaleString() + 'M';
+    return v;
   }
   function fmtPct(p) { return (p * 100).toFixed(1) + "%"; }
   function winColorClass(p) {
@@ -201,10 +206,14 @@
       ["Win Probability", fmtPct(wp), winColorClass(wp)],
       ["Ships Lost", (data.ships_lost_count != null ? fmtNum(data.ships_lost_count) + " / " + fmtNum(data.ships_initial_count || 0) : fmtPct(rawPct/100)), lostClass],
       ["Fleet Value", fmtNum(data.fleet_value)],
+      ["Fleet Cost (M/C/D)", fmtM(data.fleet_cost_metal) + " / " + fmtM(data.fleet_cost_crystal) + " / " + fmtM(data.fleet_cost_deuterium)],
       ["Ships Lost (raw)", fmtNum(rawLoss) + " (" + rawPct.toFixed(2) + "% of fleet value)"],
       ["Debris Metal", fmtNum(data.debris_metal)],
       ["Debris Crystal", fmtNum(data.debris_crystal)],
     ];
+    if ((data.additions_cost_metal || 0) + (data.additions_cost_crystal || 0) + (data.additions_cost_deuterium || 0) > 0) {
+      cards.push(["Additions Cost (M/C/D)", fmtM(data.additions_cost_metal) + " / " + fmtM(data.additions_cost_crystal) + " / " + fmtM(data.additions_cost_deuterium)]);
+    }
     if (data.debris_deuterium > 0) cards.push(["Debris Deuterium", fmtNum(data.debris_deuterium)]);
     if (data.debris_total > 0) cards.push(["Debris Total", fmtNum(data.debris_total), "win-green"]);
     var netP = data.net_profit || 0;
@@ -349,10 +358,50 @@
       } else {
         costPct = "<td class=\"value-col\">-</td>";
       }
-      row.innerHTML = "<td>" + shipLabel + "</td><td>" + fmtNum(fr.count) + "</td>" + costPct + impactCell + survivalCell;
+      var frMeta = SHIP_META[fr.key];
+      var mcdCell = (frMeta && frMeta.mcd)
+        ? "<td class=\"value-col\" title=\"combined: " + fmtNum(frMeta.cost * fr.count) + "\">" + fmtM(fr.count * frMeta.mcd[0]) + " / " + fmtM(fr.count * frMeta.mcd[1]) + " / " + fmtM(fr.count * frMeta.mcd[2]) + "</td>"
+        : "<td class=\"value-col\">—</td>";
+      row.innerHTML = "<td>" + shipLabel + "</td><td>" + fmtNum(fr.count) + "</td>" + costPct + mcdCell + impactCell + survivalCell;
       tbody.appendChild(row);
     }
-    if (fleetRows.length === 0) tbody.innerHTML = "<tr><td colspan=5>(empty fleet)</td></tr>";
+    if (fleetRows.length === 0) tbody.innerHTML = "<tr><td colspan=6>(empty fleet)</td></tr>";
+
+    // ---- Kill estimates by ship (damage-share attribution) ----
+    var killHeading = document.getElementById("kill-estimate-heading");
+    var killCaption = document.getElementById("kill-estimate-caption");
+    var killTable = document.getElementById("kill-estimate-table");
+    var killTbody = document.querySelector("#kill-estimate-table tbody");
+    var killData = data.kill_estimates || {};
+    var killKeys = Object.keys(killData);
+    if (killTbody) killTbody.innerHTML = "";
+    if (killKeys.length === 0) {
+      if (killHeading) killHeading.style.display = "none";
+      if (killCaption) killCaption.style.display = "none";
+      if (killTable) killTable.style.display = "none";
+    } else {
+      if (killHeading) killHeading.style.display = "";
+      if (killCaption) killCaption.style.display = "";
+      if (killTable) killTable.style.display = "";
+      killKeys.sort(function(a, b) {
+        var ka = (killData[a] && killData[a].kills_est != null) ? killData[a].kills_est : -Infinity;
+        var kb = (killData[b] && killData[b].kills_est != null) ? killData[b].kills_est : -Infinity;
+        if (kb !== ka) return kb - ka;
+        return a < b ? -1 : (a > b ? 1 : 0);
+      });
+      for (var ke = 0; ke < killKeys.length; ke++) {
+        var keInfo = killData[killKeys[ke]] || {};
+        var killsCell = keInfo.kills_est != null ? fmtNum(keInfo.kills_est) : "—";
+        var cpkCell = keInfo.cost_per_kill != null ? fmtNum(keInfo.cost_per_kill) : "—";
+        var shareCell = keInfo.damage_share != null ? fmtPct(keInfo.damage_share) : "—";
+        var keRow = document.createElement("tr");
+        keRow.innerHTML = "<td>" + killKeys[ke].replace(/_/g, " ") + "</td>"
+                        + "<td class=\"value-col\">" + killsCell + "</td>"
+                        + "<td class=\"value-col\">" + cpkCell + "</td>"
+                        + "<td class=\"value-col\">" + shareCell + "</td>";
+        if (killTbody) killTbody.appendChild(keRow);
+      }
+    }
 
     // ---- Defender fleet table (right column) ----
     var defTbody = document.querySelector("#defender-fleet-table tbody");
@@ -362,7 +411,7 @@
       var defAnalysis = data.defender_fleet_analysis || {};
       var defKeys = Object.keys(defAnalysis);
       if (defKeys.length === 0) {
-        defTbody.innerHTML = "<tr><td colspan=4 style=\"color:#6c7891\">(no enemy ships)</td></tr>";
+        defTbody.innerHTML = "<tr><td colspan=5 style=\"color:#6c7891\">(no enemy ships)</td></tr>";
         if (defSummary) defSummary.textContent = "";
       } else {
         // Sort by initial count desc so biggest threats come first
@@ -395,9 +444,12 @@
             ? fmtNum(survCnt) + " <span style=\"color:#8b95a7;font-size:0.9em\">(" + survPct.toFixed(1) + "%)</span>"
             : "-";
           var defCostPct = (totalDefCost > 0 && defCostMap[dk]) ? "<td class=\"value-col\">" + (defCostMap[dk] / totalDefCost * 100).toFixed(1) + "%</td>" : "<td class=\"value-col\">-</td>";
+          var destroyedCount = info.destroyed_count != null ? info.destroyed_count : (info.surviving_count != null ? cnt - info.surviving_count : null);
+          var defDestroyedCell = "<td class=\"value-col\">" + (destroyedCount != null ? fmtNum(destroyedCount) : "—") + "</td>";
           defRow.innerHTML = "<td" + destroyedClass + ">" + dk.replace(/_/g, " ") + "</td>"
                             + "<td" + destroyedClass + ">" + fmtNum(cnt) + "</td>"
                             + defCostPct
+                            + defDestroyedCell
                             + "<td class=\"value-col\">" + survCell + "</td>";
           defTbody.appendChild(defRow);
         }
@@ -813,13 +865,17 @@ if (parseBtn) {
       var survCount = survPct != null ? Math.round(fleet[k] * survPct / 100) : null;
       var surv = survPct != null ? fmtNum(survCount) + " (" + survPct.toFixed(1) + "%)" : "-";
       var costPct = totalCost > 0 ? (shipCost(k) * fleet[k] / totalCost * 100).toFixed(1) + "%" : "-";
+      var cpMeta = SHIP_META[k];
+      var mcd = (cpMeta && cpMeta.mcd)
+        ? fmtM(fleet[k] * cpMeta.mcd[0]) + " / " + fmtM(fleet[k] * cpMeta.mcd[1]) + " / " + fmtM(fleet[k] * cpMeta.mcd[2])
+        : "—";
       rows.push({
         sort: info.impact_pct != null ? info.impact_pct : -Infinity,
-        cells: [k.replace(/_/g, " "), fmtNum(fleet[k]), costPct, impact, surv]
+        cells: [k.replace(/_/g, " "), fmtNum(fleet[k]), costPct, mcd, impact, surv]
       });
     }
     rows.sort(function(a, b) { return b.sort - a.sort; });
-    var headers = ["Ship", "Count", "Cost %", "Impact %", "Surviving"];
+    var headers = ["Ship", "Count", "Cost %", "Cost M/C/D", "Impact %", "Surviving"];
     var data = rows.map(function(r) { return r.cells; });
     var text = format === "html"
       ? buildHtmlTable(headers, data, "Recommended Fleet")
@@ -847,9 +903,12 @@ if (parseBtn) {
       var survCount = info && info.surviving_count != null ? info.surviving_count : 0;
       var surv = survPct != null ? fmtNum(survCount) + " (" + survPct.toFixed(1) + "%)" : "-";
       var costPct = totalDefCost > 0 ? (shipCost(keys[d]) * cnt / totalDefCost * 100).toFixed(1) + "%" : "-";
-      rows.push([keys[d].replace(/_/g, " "), fmtNum(cnt), costPct, surv]);
+      var destroyedCount = info && info.destroyed_count != null ? info.destroyed_count
+        : (info && info.surviving_count != null ? cnt - info.surviving_count : null);
+      var destroyed = destroyedCount != null ? fmtNum(destroyedCount) : "—";
+      rows.push([keys[d].replace(/_/g, " "), fmtNum(cnt), costPct, destroyed, surv]);
     }
-    var headers = ["Ship", "Count", "Cost %", "Surviving"];
+    var headers = ["Ship", "Count", "Cost %", "Destroyed", "Surviving"];
     var text = format === "html"
       ? buildHtmlTable(headers, rows, "Defender Fleet (Enemy)")
       : buildTextTable(headers, rows);
@@ -1379,5 +1438,22 @@ if (parseBtn) {
     importCancelId: "enemy-import-cancel",
     importStatusId: "enemy-import-status",
   });
+
+  // Populate the display-only ship-cost reference table from SHIP_META.
+  // Per-100k columns = per-unit mcd x 100000; both formatted via fmtM (millions).
+  (function buildShipCostTable() {
+    var tb = document.querySelector("#ship-cost-table tbody");
+    if (!tb) return;
+    var html = "";
+    for (var i = 0; i < SHIP_KEYS.length; i++) {
+      var meta = SHIP_META[SHIP_KEYS[i]];
+      if (!meta || !meta.mcd) continue;
+      var m = meta.mcd;
+      html += "<tr><td>" + SHIP_KEYS[i].replace(/_/g, " ") + "</td>"
+        + "<td>" + fmtM(m[0]) + "</td><td>" + fmtM(m[1]) + "</td><td>" + fmtM(m[2]) + "</td>"
+        + "<td>" + fmtM(m[0] * 100000) + "</td><td>" + fmtM(m[1] * 100000) + "</td><td>" + fmtM(m[2] * 100000) + "</td></tr>";
+    }
+    tb.innerHTML = html;
+  })();
 
 })();

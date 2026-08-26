@@ -195,6 +195,15 @@ Large Shield Dome / 1"></textarea>
     </div>
   </fieldset>
 
+  <details id="ship-cost-details">
+    <summary>Ship Cost Reference</summary>
+    <p class="table-caption">Per-unit and per-100k costs in millions of each resource.</p>
+    <table id="ship-cost-table">
+      <thead><tr><th>Ship</th><th>Metal</th><th>Crystal</th><th>Deut</th><th>100k &times; Metal</th><th>100k &times; Crystal</th><th>100k &times; Deut</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </details>
+
 
   <fieldset>
     <legend>Server Settings</legend>
@@ -304,7 +313,13 @@ Large Shield Dome / 1"></textarea>
         <span class="fleet-legend-item"><span class="fleet-legend-dot fodder"></span> Fodder — cannon fodder, absorbs enemy fire to protect valuable ships</span>
       </div>
       <table id="fleet-table">
-        <thead><tr><th>Ship</th><th>Count</th><th>Cost %</th><th>Impact %</th><th>Surviving (after 6 rounds)</th></tr></thead>
+        <thead><tr><th>Ship</th><th>Count</th><th>Cost %</th><th>Cost M/C/D</th><th>Impact %</th><th>Surviving (after 6 rounds)</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <h3 id="kill-estimate-heading" style="margin-top:1rem">Estimated Kills by Ship</h3>
+      <p class="table-caption defender-summary" id="kill-estimate-caption">estimate: damage-share attribution (mean-field)</p>
+      <table id="kill-estimate-table">
+        <thead><tr><th>Ship</th><th>Est. Kills</th><th>Cost / Kill</th><th>Dmg Share</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -313,7 +328,7 @@ Large Shield Dome / 1"></textarea>
       <div id="defender-fleet-summary" class="defender-summary"></div>
       <div id="enemy-defenses-summary" class="defenses-summary"></div>
       <table id="defender-fleet-table">
-        <thead><tr><th>Ship</th><th>Count</th><th>Cost %</th><th>Surviving (after 6 rounds)</th></tr></thead>
+        <thead><tr><th>Ship</th><th>Count</th><th>Cost %</th><th>Destroyed</th><th>Surviving (after 6 rounds)</th></tr></thead>
         <tbody></tbody>
       </table>
       <div id="defender-defense-summary" class="defender-summary" style="margin-top:0.5rem"></div>
@@ -328,5 +343,5 @@ Large Shield Dome / 1"></textarea>
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/app.js?v=20260702g"></script>
+<script src="/static/app.js?v=20260826b"></script>
 {% endblock %}
