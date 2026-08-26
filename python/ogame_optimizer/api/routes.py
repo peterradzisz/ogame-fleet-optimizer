@@ -189,6 +189,7 @@ def run_optimize(req: OptimizeRequest) -> OptimizeResponse:
             additions_cost_crystal=result.additions_cost_crystal,
             additions_cost_deuterium=result.additions_cost_deuterium,
             kill_estimates=result.kill_estimates,
+            win_threshold_met=result.win_threshold_met,
         )
     except ValueError as e:
         _log.warning("Optimize validation error: %s", e)

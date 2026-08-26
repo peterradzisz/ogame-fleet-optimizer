@@ -195,6 +195,15 @@
 
   function renderResults(data) {
     metrics.innerHTML = "";
+    var banner = document.getElementById("win-threshold-banner");
+    if (banner) {
+      if (data.win_threshold_met === false) {
+        banner.textContent = "Not winnable at this budget — the fleet below is the least-loss option, not a winner. Raise Budget Multiplier (try 1.5–2.0x) or start from My Fleet.";
+        banner.className = "win-banner";
+      } else {
+        banner.className = "win-banner hidden";
+      }
+    }
     var wp = data.win_probability;
     var ci = data.confidence_interval_95 || [0, 0];
     var rawLoss = data.raw_loss_mean || data.expected_loss_mean || 0;
@@ -1010,6 +1019,7 @@ if (parseBtn) {
       expected_loss_mean: data.expected_loss_mean,
       expected_loss_stddev: data.expected_loss_stddev,
       win_probability: data.win_probability,
+      win_threshold_met: data.win_threshold_met,
       confidence_interval_95: data.confidence_interval_95,
       sims_run_final: data.sims_run_final,
       debris_metal: data.debris_metal,

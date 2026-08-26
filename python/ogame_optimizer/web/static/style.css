@@ -26,6 +26,7 @@ input:focus, select:focus { outline: 2px solid #8aa9ff; outline-offset: 1px; }
 .results h2 { margin-top: 0; color: #8aa9ff; }
 .results h3 { color: #8aa9ff; }
 .error { background: #4a1f1f; border-left: 3px solid #ff5252; color: #ffb3b3; padding: 0.75rem 1rem; border-radius: 4px; margin-bottom: 1rem; }
+.win-banner { background: #4a3a1f; border-left: 3px solid #fbbf24; color: #ffd98a; padding: 0.75rem 1rem; border-radius: 4px; margin-bottom: 1rem; font-weight: 600; }
 #metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
 .metric { background: #0f1116; padding: 0.75rem 1rem; border-radius: 4px; }
 .metric .label { font-size: 0.8rem; color: #8a93a6; }

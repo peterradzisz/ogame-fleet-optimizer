@@ -178,6 +178,10 @@ class OptimizeResponse(BaseModel):
     additions_cost_crystal: int = 0
     additions_cost_deuterium: int = 0
     kill_estimates: Dict[str, Dict] = Field(default_factory=dict)
+    # Win threshold 0.95 (attack: win_probability >= 0.95; defend:
+    # (1 - win_probability) >= 0.95). False means unwinnable at the chosen
+    # budget -- the recommended fleet is the least-loss option, not a winner
+    win_threshold_met: bool = True
 
 
 class CombatRequest(BaseModel):
