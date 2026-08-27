@@ -135,6 +135,7 @@ def run_optimize(req: OptimizeRequest) -> OptimizeResponse:
             collector_class=req.collector_class,
             min_gain_pct=req.min_gain_pct,
             base_fleet=req.base_fleet,
+            include_alternatives=req.include_alternatives,
         )
         _log.info("Optimize result: fleet=%s win_prob=%.3f loss_mean=%.0f time=%.2fs",
                   result.recommended_fleet, result.win_probability, result.expected_loss_mean, result.total_time)
@@ -190,6 +191,22 @@ def run_optimize(req: OptimizeRequest) -> OptimizeResponse:
             additions_cost_deuterium=result.additions_cost_deuterium,
             kill_estimates=result.kill_estimates,
             win_threshold_met=result.win_threshold_met,
+            alternatives=[
+                {
+                    "label": alt.label,
+                    "fleet": dict(alt.fleet),
+                    "win_probability": alt.win_probability,
+                    "expected_loss_mean": alt.expected_loss_mean,
+                    "expected_loss_stddev": alt.expected_loss_stddev,
+                    "confidence_interval_95": list(alt.confidence_interval_95),
+                    "fleet_cost_metal": alt.fleet_cost_metal,
+                    "fleet_cost_crystal": alt.fleet_cost_crystal,
+                    "fleet_cost_deuterium": alt.fleet_cost_deuterium,
+                    "kill_estimates": alt.kill_estimates,
+                    "difference_vs_primary": round(alt.difference_vs_primary, 4),
+                }
+                for alt in result.alternatives
+            ],
         )
     except ValueError as e:
         _log.warning("Optimize validation error: %s", e)

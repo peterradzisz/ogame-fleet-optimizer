@@ -51,6 +51,43 @@ def _resource_split(fleet: Dict[str, int]) -> tuple[int, int, int]:
     return metal, crystal, deuterium
 
 
+def _budget_shares(fleet: Dict[str, int]) -> Dict[str, float]:
+    """Cost-share vector of a fleet: share(t) = cost(t) / fleet total cost.
+
+    share(t) = (sum SHIPS_COST[t] * count) / total cost of the fleet.
+    Types with zero count (or unknown cost) are omitted; shares sum to
+    1.0 for any non-empty fleet of known ships. Returns {} for a
+    zero-cost / empty fleet (callers treat that as "no composition").
+    """
+    total = 0.0
+    costs: Dict[str, float] = {}
+    for ship, count in fleet.items():
+        cost = SHIPS_COST.get(ship)
+        if cost and count and count > 0:
+            c = float(sum(cost)) * count
+            costs[ship] = costs.get(ship, 0.0) + c
+            total += c
+    if total <= 0:
+        return {}
+    return {s: c / total for s, c in costs.items()}
+
+
+def _share_distance(fleet_a: Dict[str, int], fleet_b: Dict[str, int]) -> float:
+    """Total-variation distance between two fleets' cost-share vectors.
+
+    ``0.5 * sum(|shareA(t) - shareB(t)|)`` over the UNION of ship types
+    (a type missing from one fleet contributes share 0 on that side).
+    Range [0, 1]: 0 = identical cost composition, 1 = fully disjoint
+    ship types. Used as the diversity gate metric for fleet alternatives.
+    """
+    shares_a = _budget_shares(fleet_a)
+    shares_b = _budget_shares(fleet_b)
+    return 0.5 * sum(
+        abs(shares_a.get(t, 0.0) - shares_b.get(t, 0.0))
+        for t in set(shares_a) | set(shares_b)
+    )
+
+
 def _compute_kill_estimates(
     recommended_fleet: Dict[str, int],
     enemy_fleet: Dict[str, int],
@@ -153,6 +190,35 @@ def _compute_kill_estimates(
 
 
 @dataclass
+class AlternativeResult:
+    """A quality-gated alternative fleet composition ("Option B/C").
+
+    Produced by the alternatives engine (``_generate_alternatives``) AFTER
+    the primary result is frozen. Every statistic comes from an
+    independent final-validation batch of THIS fleet (same techs / economy
+    / debris settings as the primary, at ``max(150, final_sims // 2)``
+    sims). ``kill_estimates`` reuses the PRIMARY run's defender analysis:
+    destroyed counts are primary-run artifacts, so they are an estimate
+    here (documented; the attribution matrix itself IS the alternative's
+    own). ``difference_vs_primary`` is the cost-share distance
+    (``_share_distance``) to the primary fleet - >= the 0.10 diversity
+    gate whenever this alternative was accepted through it.
+    """
+
+    label: str
+    fleet: Dict[str, int]
+    win_probability: float
+    expected_loss_mean: float
+    expected_loss_stddev: float
+    confidence_interval_95: tuple
+    fleet_cost_metal: int
+    fleet_cost_crystal: int
+    fleet_cost_deuterium: int
+    kill_estimates: Dict[str, Dict]
+    difference_vs_primary: float
+
+
+@dataclass
 class OptimizationResult:
     recommended_fleet: Dict[str, int]
     expected_loss_mean: float
@@ -212,6 +278,10 @@ class OptimizationResult:
     additions_cost_crystal: int = 0
     additions_cost_deuterium: int = 0
     kill_estimates: Dict[str, Dict] = field(default_factory=dict)
+    # Fleet alternatives ("Option B/C"): genuinely-different compositions,
+    # each independently validated. Populated only on the main result site
+    # (early exits / skips keep it empty by design).
+    alternatives: List[AlternativeResult] = field(default_factory=list)
 
 
 def _validate_inputs(
@@ -539,6 +609,411 @@ def _prune_dead_weight(
     return pruned, list(pruned_names)
 
 
+# --- Fleet alternatives ("Option B/C") ----------------------------------
+#
+# Diversity gate: a candidate must differ from the primary (and from every
+# already-accepted alternative) by a cost-share total-variation distance of
+# at least this much. 0.10 = e.g. 10% of the budget moved between types.
+_MIN_ALT_SHARE_DISTANCE = 0.10
+# Quality gate: an alternative's effective loss may exceed the primary's by
+# at most this factor (trading a little optimality for a different comp).
+_MAX_ALT_LOSS_FACTOR = 1.10
+# Max number of accepted alternatives ("Option B", "Option C").
+_MAX_ALTERNATIVES = 2
+# Forced-pass GA budget: clamp(ga_time_budget * 0.6, 0.5, 4.0) per pass.
+_FORCED_PASS_BUDGET_MIN = 0.5
+_FORCED_PASS_BUDGET_MAX = 4.0
+
+
+def _generate_alternatives(
+    primary_fleet: Dict[str, int],
+    primary_loss: float,
+    primary_win_met: bool,
+    defender_fleet_analysis: Dict[str, Dict[str, float]],
+    enemy_fleet: Dict[str, int],
+    enemy_defenses: Dict[str, int],
+    enemy_tech: tuple,
+    attacker_tech: tuple,
+    mode: str,
+    base_fleet: Optional[Dict[str, int]],
+    ga_budget: int,
+    exclude_ships,
+    seed_candidates: List[tuple],
+    ga_time_budget: float,
+    final_sims: int,
+    debris_pct: float,
+    deuterium_in_debris: bool,
+    loss_scale: float,
+    resource_weights: tuple,
+    preference_beta: float,
+    min_gain_pct: float,
+    base_seed: int,
+) -> List[AlternativeResult]:
+    """Build up to 2 genuinely-different, quality-gated fleet alternatives.
+
+    Called AFTER the primary's final validation + sensitivity so every
+    primary number it compares against is frozen. Pipeline per candidate:
+
+    1. Diversity gate (cheap, composition-only - no sims): cost-share
+       distance vs primary AND vs every accepted alternative must be
+       >= ``_MIN_ALT_SHARE_DISTANCE``.
+    2. Independent validation: same ``simulate_batch`` machinery as the
+       primary final validation, with ``max(150, final_sims // 2)`` sims
+       and identical techs / economy / debris settings (distinct,
+       deterministic base_seed offsets).
+    3. Quality gate: ``alt_loss <= _MAX_ALT_LOSS_FACTOR * primary_loss``
+       AND the alternative's win-threshold status equals the primary's
+       (same 0.95 rule for the mode - an unwinnable-vs-winnable swap is
+       never offered as an "alternative").
+
+    Candidate sources (in order, stop at 2 accepted):
+    * Harvest: the top 4 non-primary per-seed bests from Phase B's
+      multi-start loop (threaded out via ``seed_candidates`` as
+      ``(name, additions, merged_fleet, validated_loss)`` tuples), ranked
+      by their Phase-B validated loss.
+    * Forced pass B: a short GA run whose exclude set adds the primary's
+      dominant-by-cost ship type (unioned with user excludes).
+    * Forced pass C (only if an Option B was accepted): excludes the
+      dominant types of BOTH the primary and Option B.
+
+    Forced passes reuse the Phase B shape (progressive seed generation
+      with the exclude set -> per-seed explore -> refine of the best) at
+      ``clamp(ga_time_budget * 0.6, 0.5, 4.0)`` seconds, with deterministic
+      base_seed offsets (+1001 / +1002) so runs are reproducible.
+
+    ``kill_estimates`` of an accepted alternative reuse the PRIMARY's
+    ``defender_fleet_analysis`` (destroyed counts are primary-run
+    artifacts; the alternative's own attribution matrix is used for the
+    damage split, so the heuristic fallback applies on the Rust path /
+    small fleets exactly as for the primary).
+
+    Skip conditions (return empty, logged): no additions budget (0.0x
+    simulation), primary win-threshold not met (unwinnable -> noise),
+    empty primary fleet, or base_fleet mode where the primary ended up
+    with no additions.
+    """
+    primary_fleet = {s: c for s, c in primary_fleet.items() if c > 0}
+
+    # --- Skip conditions (cheap, logged, before any work) -----------------
+    if ga_budget <= 0:
+        _log.info("--- Alternatives: SKIPPED (no additions budget: 0.0x simulation) ---")
+        return []
+    if not primary_win_met:
+        _log.info("--- Alternatives: SKIPPED (primary win threshold not met - "
+                  "unwinnable scenario, alternatives would be noise) ---")
+        return []
+    if not primary_fleet:
+        _log.info("--- Alternatives: SKIPPED (empty primary fleet) ---")
+        return []
+    if base_fleet:
+        _add = {s: primary_fleet.get(s, 0) - base_fleet.get(s, 0) for s in primary_fleet}
+        if not any(c > 0 for c in _add.values()):
+            _log.info("--- Alternatives: SKIPPED (additions mode with no additions) ---")
+            return []
+
+    from ogame_optimizer.optimizer.genetic import GAConfig
+    from ogame_optimizer.optimizer.progressive_seeds import generate_progressive_seeds
+
+    accepted: List[AlternativeResult] = []
+    # Fleet list for the pairwise diversity gate: primary first, then each
+    # accepted alternative's fleet (index i -> label accepted[i-1]).
+    gate_fleets: List[Dict[str, int]] = [primary_fleet]
+
+    def _fleet_key(f: Dict[str, int]) -> tuple:
+        return tuple(sorted((s, c) for s, c in f.items() if c > 0))
+
+    def _enforce_budget(fleet: Dict[str, int]) -> Dict[str, int]:
+        """Mirror the primary's post-GA budget enforcement: proportional
+        scale-down of an over-budget fleet (additions only in base_fleet
+        mode - the base is a sunk cost). Usually a no-op; defensive."""
+        if base_fleet:
+            adds = {s: max(0, fleet.get(s, 0) - base_fleet.get(s, 0)) for s in fleet}
+            cost = fleet_value(adds)
+            if cost > ga_budget and cost > 0:
+                scale = ga_budget / cost
+                adds = {k: int(v * scale) for k, v in adds.items() if int(v * scale) > 0}
+                return _merge_fleet(base_fleet, adds)
+            return fleet
+        cost = fleet_value(fleet)
+        if cost > ga_budget and cost > 0:
+            scale = ga_budget / cost
+            return {k: int(v * scale) for k, v in fleet.items() if int(v * scale) > 0}
+        return fleet
+
+    def _dominant_type(fleet: Dict[str, int]) -> Optional[str]:
+        """Ship type holding the largest share of the fleet's total cost."""
+        best_ship, best_cost = None, -1.0
+        for ship, count in fleet.items():
+            if count <= 0:
+                continue
+            cost = float(sum(SHIPS_COST.get(ship, (0, 0, 0)))) * count
+            if cost > best_cost:
+                best_ship, best_cost = ship, cost
+        return best_ship
+
+    def _evaluate_candidate(name: str, cand_fleet: Dict[str, int], eval_idx: int) -> Optional[AlternativeResult]:
+        """Diversity gate -> validate -> quality gate for one candidate."""
+        cand = {s: c for s, c in cand_fleet.items() if c > 0}
+        if not cand:
+            _log.info("--- Alternatives: candidate=%s rejected (empty fleet) ---", name)
+            return None
+        dist = _share_distance(cand, primary_fleet)
+        if dist < _MIN_ALT_SHARE_DISTANCE:
+            _log.info("--- Alternatives: candidate=%s dist=%.2f rejected(diversity<%.2f vs primary) ---",
+                      name, dist, _MIN_ALT_SHARE_DISTANCE)
+            return None
+        for i, other in enumerate(gate_fleets[1:], start=1):
+            d_other = _share_distance(cand, other)
+            if d_other < _MIN_ALT_SHARE_DISTANCE:
+                _log.info("--- Alternatives: candidate=%s dist=%.2f rejected(diversity<%.2f vs %s) ---",
+                          name, dist, _MIN_ALT_SHARE_DISTANCE, accepted[i - 1].label)
+                return None
+
+        # Diversity OK -> the expensive part: independent final validation
+        # (same machinery/settings as the primary, half the sims, floor 150).
+        n_alt_sims = max(150, final_sims // 2)
+        alt_final = simulate_batch(
+            attacker=cand,
+            defender=enemy_fleet,
+            defender_defenses=enemy_defenses,
+            attacker_tech=attacker_tech,
+            defender_tech=enemy_tech,
+            n_sims=n_alt_sims,
+            base_seed=base_seed + 8888 + 17 * eval_idx,
+            debris_pct=debris_pct,
+            deuterium_in_debris=deuterium_in_debris,
+        )
+        alt_raw_loss = float(alt_final.get("mean_attacker_loss", 0))
+        alt_penalty = resource_preference_penalty(cand, resource_weights, preference_beta)
+        alt_loss = alt_raw_loss * loss_scale + alt_penalty
+        alt_stddev = float(alt_final.get("stddev_attacker_loss", 0))
+        alt_wp = float(alt_final.get("win_probability", 0.0))
+        alt_win_met = (alt_wp >= 0.95) if mode == "attack" else ((1.0 - alt_wp) >= 0.95)
+
+        if alt_loss > _MAX_ALT_LOSS_FACTOR * primary_loss:
+            _log.info("--- Alternatives: candidate=%s dist=%.2f rejected(loss=%.0f > %.2fx%.0f) ---",
+                      name, dist, alt_loss, _MAX_ALT_LOSS_FACTOR, primary_loss)
+            return None
+        if alt_win_met != primary_win_met:
+            _log.info("--- Alternatives: candidate=%s dist=%.2f rejected(win-threshold status "
+                      "differs from primary: %s vs %s) ---", name, dist, alt_win_met, primary_win_met)
+            return None
+
+        label = "Option B" if not accepted else "Option C"
+        stderr = alt_stddev / max(1, n_alt_sims ** 0.5)
+        cost_m, cost_c, cost_d = _resource_split(cand)
+        alt_kills = _compute_kill_estimates(
+            recommended_fleet=cand,
+            enemy_fleet=enemy_fleet,
+            attribution_mean=alt_final.get("attribution_mean", {}) or {},
+            enemy_defenses=enemy_defenses,
+            enemy_tech=enemy_tech,
+            attacker_tech=attacker_tech,
+            defender_fleet_analysis=defender_fleet_analysis,
+        )
+        result = AlternativeResult(
+            label=label,
+            fleet=cand,
+            win_probability=alt_wp,
+            expected_loss_mean=alt_loss,
+            expected_loss_stddev=alt_stddev,
+            confidence_interval_95=(alt_loss - 1.96 * stderr, alt_loss + 1.96 * stderr),
+            fleet_cost_metal=cost_m,
+            fleet_cost_crystal=cost_c,
+            fleet_cost_deuterium=cost_d,
+            kill_estimates=alt_kills,
+            difference_vs_primary=dist,
+        )
+        _log.info("--- Alternatives: candidate=%s dist=%.2f accepted(%s: loss=%.0f win=%.1f%%) ---",
+                  name, dist, label, alt_loss, alt_wp * 100)
+        return result
+
+    def _forced_pass(pass_name: str, forced_excludes: set, pass_seed: int) -> Optional[Dict[str, int]]:
+        """Short GA run with extra ship-type excludes (Phase B shape).
+
+        Seeds from its own progressive-seed generation (exclude set
+        applied), quick-explores each seed, then refines the best with the
+        remaining budget - mirroring Phase B1/B2. Returns the best MERGED
+        fleet (base + additions in base_fleet mode) or None.
+        """
+        all_excludes = set(exclude_ships or []) | set(forced_excludes)
+        pass_budget = max(_FORCED_PASS_BUDGET_MIN,
+                          min(_FORCED_PASS_BUDGET_MAX, ga_time_budget * 0.6))
+        _log.info("--- Alternatives: forced pass %s (budget=%.1fs excludes=%s) ---",
+                  pass_name, pass_budget, sorted(all_excludes))
+        try:
+            prog = generate_progressive_seeds(
+                enemy_fleet=enemy_fleet,
+                enemy_defenses=enemy_defenses,
+                budget=ga_budget,
+                attacker_tech=attacker_tech,
+                enemy_tech=enemy_tech,
+                debris_pct=debris_pct,
+                deuterium_in_debris=deuterium_in_debris,
+                exclude_ships=sorted(all_excludes),
+                base_seed=pass_seed,
+            )
+        except Exception as seed_exc:
+            _log.warning("  Forced pass %s: seed generation failed: %s", pass_name, seed_exc)
+            return None
+        prog = [{s: c for s, c in f.items() if s not in all_excludes and c > 0} for f in prog]
+        prog = [f for f in prog if f and sum(f.values()) > 0]
+        if not prog:
+            _log.info("  Forced pass %s: no viable seeds (excludes leave nothing)", pass_name)
+            return None
+
+        def _validate(fleet: Dict[str, int], n_sims: int) -> float:
+            batch = simulate_batch(
+                attacker=fleet,
+                defender=enemy_fleet,
+                defender_defenses=enemy_defenses,
+                attacker_tech=attacker_tech,
+                defender_tech=enemy_tech,
+                n_sims=n_sims,
+                base_seed=base_seed + 7777,
+                debris_pct=debris_pct,
+                deuterium_in_debris=deuterium_in_debris,
+            )
+            pen = resource_preference_penalty(fleet, resource_weights, preference_beta)
+            return float(batch.get("mean_attacker_loss", float("inf"))) * loss_scale + pen
+
+        def _ga(seed_fleet: Dict[str, int], cfg: GAConfig, ga_seed: int):
+            drift = _drift_bounds_for_seed(seed_fleet, budget=ga_budget)
+            for s in all_excludes:
+                drift[s] = (0, 0)
+            return genetic_optimize(
+                seed_fleet=seed_fleet,
+                enemy_fleet=enemy_fleet,
+                enemy_defenses=enemy_defenses,
+                enemy_tech=enemy_tech,
+                attacker_tech=attacker_tech,
+                budget=ga_budget,
+                mode=mode,
+                config=cfg,
+                base_seed=ga_seed,
+                drift_bounds=drift,
+                loss_scale=loss_scale,
+                resource_weights=resource_weights,
+                preference_beta=preference_beta,
+                min_gain_pct=min_gain_pct,
+                base_fleet=base_fleet,
+            )
+
+        # Explore phase (mirrors Phase B1: min(15% of budget, 2s) per seed).
+        explore_time = min(pass_budget * 0.15, 2.0)
+        best_fleet: Optional[Dict[str, int]] = None
+        best_loss = float("inf")
+        for i, seed_f in enumerate(prog):
+            if explore_time >= 0.5:
+                ga_out = _ga(seed_f, GAConfig(
+                    time_budget_seconds=explore_time, sims_per_eval=20, population_size=20,
+                    mutation_rate=0.30, mutation_step_fraction=0.30, macro_mutation_rate=0.20,
+                    reallocate_rate=0.30,
+                ), pass_seed + 101 + i)
+                additions = ga_out.best_fleet
+            else:
+                additions = seed_f
+            merged = _merge_fleet(base_fleet, additions) if base_fleet else dict(additions)
+            loss = _validate(merged, 100)
+            if loss < best_loss:
+                best_fleet, best_loss = merged, loss
+        if best_fleet is None:
+            return None
+
+        # Refine phase (mirrors Phase B2: refine + polish on the best).
+        best_additions = {s: max(0, best_fleet.get(s, 0) - (base_fleet or {}).get(s, 0))
+                          for s in best_fleet}
+        best_additions = {s: c for s, c in best_additions.items() if c > 0}
+        refine_time = pass_budget - explore_time * len(prog)
+        refine_rounds = [
+            ("refine", 0.50, 50, 0.15, 0.18, 0.12, 0.20),
+            ("polish", 0.50, 100, 0.08, 0.10, 0.05, 0.10),
+        ]
+        for r_idx, (rname, t_frac, sims_eval, mut_rate, step_frac, macro_rate, realloc_rate) in enumerate(refine_rounds):
+            t_alloc = refine_time * t_frac
+            if t_alloc < 0.5 or not best_additions:
+                continue
+            ga_out = _ga(best_additions, GAConfig(
+                time_budget_seconds=t_alloc, sims_per_eval=sims_eval, population_size=30,
+                mutation_rate=mut_rate, mutation_step_fraction=step_frac,
+                macro_mutation_rate=macro_rate, reallocate_rate=realloc_rate,
+            ), pass_seed + 201 + r_idx)
+            merged = _merge_fleet(base_fleet, ga_out.best_fleet) if base_fleet else dict(ga_out.best_fleet)
+            if not any(c > 0 for c in merged.values()):
+                continue
+            loss = _validate(merged, 200)
+            if loss < best_loss:
+                best_fleet, best_loss = merged, loss
+                best_additions = {s: max(0, merged.get(s, 0) - (base_fleet or {}).get(s, 0))
+                                  for s in merged}
+                best_additions = {s: c for s, c in best_additions.items() if c > 0}
+        return best_fleet
+
+    _log.info("--- Alternatives: generating (primary loss=%.0f, up to %d) ---",
+              primary_loss, _MAX_ALTERNATIVES)
+
+    # --- Source 1: harvested Phase-B per-seed bests (already computed) ----
+    seen_keys = {_fleet_key(primary_fleet)}
+    harvested = []
+    for name, additions, merged, loss in seed_candidates:
+        fleet = _enforce_budget({s: c for s, c in (merged or additions or {}).items() if c > 0})
+        if not fleet:
+            continue
+        if loss == float("inf") or loss != loss:  # inf / nan guard
+            continue
+        key = _fleet_key(fleet)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        harvested.append((name, fleet, loss))
+    harvested.sort(key=lambda item: item[2])
+    harvested = harvested[:4]
+    if harvested:
+        _log.info("  Harvested %d Phase-B candidates (best loss=%.0f)",
+                  len(harvested), harvested[0][2])
+
+    eval_idx = 0
+    for name, fleet, _loss in harvested:
+        if len(accepted) >= _MAX_ALTERNATIVES:
+            break
+        result = _evaluate_candidate("harvest:" + name, fleet, eval_idx)
+        eval_idx += 1
+        if result is not None:
+            accepted.append(result)
+            gate_fleets.append(result.fleet)
+
+    # --- Source 2: forced pass B (exclude primary's dominant type) --------
+    dominant_primary = _dominant_type(primary_fleet)
+    if len(accepted) < _MAX_ALTERNATIVES and dominant_primary:
+        cand = _forced_pass("B", {dominant_primary}, base_seed + 1001)
+        if cand:
+            cand = _enforce_budget(cand)
+            result = _evaluate_candidate("forced:B", cand, eval_idx)
+            eval_idx += 1
+            if result is not None:
+                accepted.append(result)
+                gate_fleets.append(result.fleet)
+    elif not dominant_primary:
+        _log.info("--- Alternatives: forced pass B skipped (no dominant type) ---")
+
+    # --- Source 3: forced pass C (exclude primary + Option B dominants) ---
+    if len(accepted) < _MAX_ALTERNATIVES and accepted and dominant_primary:
+        dominant_b = _dominant_type(accepted[0].fleet)
+        excludes_c = {dominant_primary} | ({dominant_b} if dominant_b else set())
+        cand = _forced_pass("C", excludes_c, base_seed + 1002)
+        if cand:
+            cand = _enforce_budget(cand)
+            result = _evaluate_candidate("forced:C", cand, eval_idx)
+            eval_idx += 1
+            if result is not None:
+                accepted.append(result)
+                gate_fleets.append(result.fleet)
+
+    _log.info("--- Alternatives: done (%d accepted: %s) ---",
+              len(accepted), [a.label for a in accepted] or "none")
+    return accepted
+
+
 def optimize(
     enemy_fleet: Dict[str, int],
     enemy_defenses: Optional[Dict[str, int]] = None,
@@ -563,6 +1038,10 @@ def optimize(
     preference_beta: float = 0.05,
     collector_class: bool = False,
     base_fleet: Optional[Dict[str, int]] = None,
+    # Fleet alternatives ("Option B/C"): generate up to 2 additional
+    # genuinely-different, quality-gated compositions after the primary
+    # result is frozen (adds ~2x (0.5-4s GA + validation) wall time).
+    include_alternatives: bool = True,
 ) -> OptimizationResult:
     enemy_defenses = enemy_defenses or {}
     t0 = time.time()
@@ -883,6 +1362,10 @@ def optimize(
 
     # Phase B1: Quick exploration from each seed (parallel strategies)
     explore_time = min(ga_time_budget * 0.15, 2.0)  # 15% of budget per seed
+    # Alternatives harvest: every per-seed best computed below is retained
+    # (name, additions, merged fleet, validated loss) - zero cost, purely
+    # additive bookkeeping consumed by _generate_alternatives later.
+    _alt_seed_candidates: List[tuple] = []
     for seed_name, seed_fleet in seeds.items():
         if explore_time < 0.5:
             continue
@@ -927,6 +1410,7 @@ def optimize(
         )
         _round_penalty = resource_preference_penalty(_ga_merged, resource_weights, preference_beta)
         validated_loss = float(validation.get("mean_attacker_loss", float("inf"))) * _loss_scale + _round_penalty
+        _alt_seed_candidates.append((seed_name, dict(ga_round.best_fleet), dict(_ga_merged), validated_loss))
 
         if validated_loss < global_best_loss:
             global_best_additions = dict(ga_round.best_fleet)
@@ -1299,6 +1783,42 @@ def optimize(
         defender_fleet_analysis=defender_fleet_analysis,
     )
 
+    # --- Fleet alternatives: up to 2 genuinely-different compositions ------
+    # Runs AFTER final validation + sensitivity so every primary number the
+    # gates compare against is frozen. Any failure here must NEVER kill the
+    # optimization - log and continue with an empty alternatives list.
+    alternatives: List[AlternativeResult] = []
+    if include_alternatives:
+        try:
+            alternatives = _generate_alternatives(
+                primary_fleet=ga_result.best_fleet,
+                primary_loss=mean_loss,
+                primary_win_met=_win_met,
+                defender_fleet_analysis=defender_fleet_analysis,
+                enemy_fleet=enemy_fleet,
+                enemy_defenses=enemy_defenses,
+                enemy_tech=enemy_tech,
+                attacker_tech=attacker_tech,
+                mode=mode,
+                base_fleet=base_fleet,
+                ga_budget=_ga_budget,
+                exclude_ships=exclude_ships,
+                seed_candidates=_alt_seed_candidates,
+                ga_time_budget=ga_time_budget,
+                final_sims=final_sims,
+                debris_pct=debris_pct,
+                deuterium_in_debris=deuterium_in_debris,
+                loss_scale=_loss_scale,
+                resource_weights=resource_weights,
+                preference_beta=preference_beta,
+                min_gain_pct=min_gain_pct,
+                base_seed=base_seed,
+            )
+        except Exception as alt_exc:  # noqa: BLE001 - alternatives are best-effort
+            _log.error("Alternatives generation failed (continuing without): %s",
+                       alt_exc, exc_info=True)
+            alternatives = []
+
     return OptimizationResult(
         recommended_fleet=ga_result.best_fleet,
         fleet_value=_final_fv,
@@ -1353,7 +1873,8 @@ def optimize(
         additions_cost_crystal=_additions_cost_split[1],
         additions_cost_deuterium=_additions_cost_split[2],
         kill_estimates=_kill_estimates,
+        alternatives=alternatives,
     )
 
 
-__all__ = ["optimize", "OptimizationResult"]
+__all__ = ["optimize", "OptimizationResult", "AlternativeResult"]

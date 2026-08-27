@@ -80,6 +80,9 @@ class OptimizeRequest(BaseModel):
     # base_fleet mode: player's existing fleet (locked, always fielded).
     # When provided, the GA optimises additions on top of this fleet.
     base_fleet: Optional[Dict[str, int]] = None
+    # Fleet alternatives ("Option B/C"): False disables Option B/C generation
+    # (primary optimisation result is unaffected either way).
+    include_alternatives: bool = True
 
     @field_validator("budget_multiplier")
     @classmethod
@@ -182,6 +185,15 @@ class OptimizeResponse(BaseModel):
     # (1 - win_probability) >= 0.95). False means unwinnable at the chosen
     # budget -- the recommended fleet is the least-loss option, not a winner
     win_threshold_met: bool = True
+    # Alternative fleet compositions ("Option B/C"): up to 2 genuinely
+    # different, quality-gated fleets. Each entry dict has keys:
+    #   label, fleet, win_probability, expected_loss_mean,
+    #   expected_loss_stddev, confidence_interval_95 (list[float]),
+    #   fleet_cost_metal, fleet_cost_crystal, fleet_cost_deuterium,
+    #   kill_estimates, difference_vs_primary (cost-share distance to the
+    #   primary fleet, >= 0.10 diversity gate). Empty list when disabled
+    #   (include_alternatives=false), unwinnable, or no candidate passes.
+    alternatives: List[Dict] = Field(default_factory=list)
 
 
 class CombatRequest(BaseModel):
