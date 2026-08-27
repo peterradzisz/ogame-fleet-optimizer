@@ -1574,4 +1574,77 @@ if (parseBtn) {
     tb.innerHTML = html;
   })();
 
+  // Column-bar chart of per-unit M/C/D costs, beside the reference table.
+  // Design intent: bars are normalized PER SHIP (that ship's largest
+  // component = 112px), so each group shows the ship's M:C:D *shape*;
+  // the absolute scale is carried by the .scc-total labels (groups sorted
+  // by combined cost DESC - deathstar first tells the value story).
+  function buildShipCostChart() {
+    var host = document.getElementById("ship-cost-chart");
+    if (!host) return;
+    var rows = [];
+    for (var i = 0; i < SHIP_KEYS.length; i++) {
+      var meta = SHIP_META[SHIP_KEYS[i]];
+      if (!meta || !meta.mcd) continue;
+      rows.push({ key: SHIP_KEYS[i], mcd: meta.mcd });
+    }
+    if (rows.length === 0) return;
+    rows.sort(function(a, b) {
+      var sa = a.mcd[0] + a.mcd[1] + a.mcd[2];
+      var sb = b.mcd[0] + b.mcd[1] + b.mcd[2];
+      return sb - sa;
+    });
+
+    var RES = ["Metal", "Crystal", "Deuterium"];
+    var CLS = ["scc-m", "scc-c", "scc-d"];
+    var nameOf = function(key) { return key.replace(/_/g, " "); };
+
+    var legend = document.createElement("div");
+    legend.className = "scc-legend";
+    for (var r = 0; r < 3; r++) {
+      var item = document.createElement("span");
+      item.className = "scc-legend-item";
+      var swatch = document.createElement("span");
+      swatch.className = "scc-swatch " + CLS[r];
+      swatch.setAttribute("aria-hidden", "true");
+      var text = document.createElement("span");
+      text.textContent = RES[r];
+      item.appendChild(swatch);
+      item.appendChild(text);
+      legend.appendChild(item);
+    }
+    host.appendChild(legend);
+
+    var groups = document.createElement("div");
+    groups.className = "scc-groups";
+    for (var j = 0; j < rows.length; j++) {
+      var row = rows[j];
+      var maxComponent = Math.max(row.mcd[0], row.mcd[1], row.mcd[2]);
+      var group = document.createElement("div");
+      group.className = "scc-group";
+      var bars = document.createElement("div");
+      bars.className = "scc-bars";
+      for (var c = 0; c < 3; c++) {
+        var bar = document.createElement("div");
+        bar.className = "scc-bar " + CLS[c];
+        var h = maxComponent > 0 ? Math.round(row.mcd[c] / maxComponent * 112) : 0;
+        bar.style.height = h + "px"; // css min-height: 2px floors zero components
+        bar.title = nameOf(row.key) + " — " + RES[c] + ": " + fmtNum(row.mcd[c]);
+        bars.appendChild(bar);
+      }
+      group.appendChild(bars);
+      var label = document.createElement("div");
+      label.className = "scc-label";
+      label.textContent = nameOf(row.key);
+      var total = document.createElement("div");
+      total.className = "scc-total";
+      total.textContent = fmtNum(row.mcd[0] + row.mcd[1] + row.mcd[2]);
+      group.appendChild(label);
+      group.appendChild(total);
+      groups.appendChild(group);
+    }
+    host.appendChild(groups);
+  }
+  buildShipCostChart();
+
 })();

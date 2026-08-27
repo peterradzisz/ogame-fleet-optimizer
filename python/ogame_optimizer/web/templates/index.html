@@ -198,11 +198,16 @@ Large Shield Dome / 1"></textarea>
 
   <details id="ship-cost-details">
     <summary>Ship Cost Reference</summary>
-    <p class="table-caption">Per-unit and per-100k costs in millions of each resource.</p>
-    <table id="ship-cost-table">
-      <thead><tr><th>Ship</th><th>Metal</th><th>Crystal</th><th>Deut</th><th>100k &times; Metal</th><th>100k &times; Crystal</th><th>100k &times; Deut</th></tr></thead>
-      <tbody></tbody>
-    </table>
+    <div class="ship-cost-layout">
+      <div class="ship-cost-table-col">
+        <p class="table-caption">Per-unit and per-100k costs in millions of each resource.</p>
+        <table id="ship-cost-table">
+          <thead><tr><th>Ship</th><th>Metal</th><th>Crystal</th><th>Deut</th><th>100k &times; Metal</th><th>100k &times; Crystal</th><th>100k &times; Deut</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div id="ship-cost-chart" class="ship-cost-chart" aria-label="Per-unit M/C/D cost columns"></div>
+    </div>
   </details>
 
 
@@ -346,5 +351,5 @@ Large Shield Dome / 1"></textarea>
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/app.js?v=20260826d"></script>
+<script src="/static/app.js?v=20260827a"></script>
 {% endblock %}
