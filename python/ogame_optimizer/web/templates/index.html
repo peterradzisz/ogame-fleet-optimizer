@@ -254,7 +254,7 @@ Large Shield Dome / 1"></textarea>
         <legend>Resource priority (soft tiebreaker)</legend>
         <div class="resource-weights-row">
           <label class="resource-weight-label">Metal
-            <input type="number" id="weight_m" min="0" max="10" step="0.1" value="2.0">
+            <input type="number" id="weight_m" min="0" max="10" step="0.1" value="1.0">
           </label>
           <label class="resource-weight-label">Crystal
             <input type="number" id="weight_c" min="0" max="10" step="0.1" value="1.0">
@@ -280,7 +280,7 @@ Large Shield Dome / 1"></textarea>
           Higher weight = prefer ships heavy in that resource when combat is tied.
           β adds a synthetic resource penalty to non-matching fleets, so the optimizer actually picks metal-heavy ships (LF, Cruiser) over destroyer-heavy ones. 0 disables it entirely. 0.05-0.15 is mild; 0.20+ is strong.
           Budget ceiling stays raw — all recommendations remain buildable.
-          Default 2:1:1 @ β=0.05 helps if you're overflowing with metal.
+          Default 1:1:1 @ β=0.05 weighs every resource equally; raise a weight only if you're overflowing with that resource.
         </p>
       </fieldset>
     </div>
@@ -352,5 +352,5 @@ Large Shield Dome / 1"></textarea>
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/app.js?v=20260828a"></script>
+<script src="/static/app.js?v=20260829a"></script>
 {% endblock %}

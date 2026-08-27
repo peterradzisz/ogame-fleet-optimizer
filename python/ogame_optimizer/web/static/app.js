@@ -141,7 +141,7 @@
         hyperspace_tech: parseInt((document.getElementById('hyperspace_tech')||{value:'0'}).value || '0'),
         collector_class: document.getElementById('collector_class') ? document.getElementById('collector_class').checked : false,
         resource_weights: [
-          parseFloat((document.getElementById('weight_m')||{value:'2.0'}).value || '2.0'),
+          parseFloat((document.getElementById('weight_m')||{value:'1.0'}).value || '1.0'),
           parseFloat((document.getElementById('weight_c')||{value:'1.0'}).value || '1.0'),
           parseFloat((document.getElementById('weight_d')||{value:'1.0'}).value || '1.0'),
         ],

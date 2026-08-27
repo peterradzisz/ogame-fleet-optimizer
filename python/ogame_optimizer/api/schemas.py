@@ -156,7 +156,7 @@ class OptimizeResponse(BaseModel):
     fleet_analysis: Dict[str, Dict] = Field(default_factory=dict)
     defender_fleet_analysis: Dict[str, Dict] = Field(default_factory=dict)
     defender_defense_analysis: Dict[str, Dict] = Field(default_factory=dict)
-    resource_weights: List[float] = Field(default_factory=lambda: [2.0, 1.0, 1.0])
+    resource_weights: List[float] = Field(default_factory=lambda: [1.0, 1.0, 1.0])
     preference_beta: float = 0.05
     fleet_weighted_value: float = 0.0
     resource_preference_penalty: float = 0.0
@@ -187,7 +187,7 @@ class OptimizeResponse(BaseModel):
     win_threshold_met: bool = True
     # Cost-proportional light-fighter share of the recommended fleet, in
     # percent (0-100). Computed server-side in routes.py with the default
-    # resource weights (M:2.0, C:1.0, D:1.0) as lf_weighted_cost /
+    # resource weights (M:1.0, C:1.0, D:1.0) as lf_weighted_cost /
     # total_weighted_cost * 100. 100 = pure-LF fleet, 0 = no LF cost.
     # Default 0.0 keeps old consumers / legacy snapshots safe.
     lf_share: float = 0.0

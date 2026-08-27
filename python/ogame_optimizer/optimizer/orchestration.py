@@ -1034,7 +1034,7 @@ def optimize(
     # accepts fleets whose actual ROI >= this threshold.
     min_gain_pct: float = 0.0,
     hyperspace_tech: int = 11,
-    resource_weights: tuple[float, float, float] = (2.0, 1.0, 1.0),
+    resource_weights: tuple[float, float, float] = (1.0, 1.0, 1.0),
     preference_beta: float = 0.05,
     collector_class: bool = False,
     base_fleet: Optional[Dict[str, int]] = None,

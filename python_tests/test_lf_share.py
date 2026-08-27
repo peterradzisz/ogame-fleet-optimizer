@@ -2,7 +2,7 @@
 
 lf_share is the cost-proportional light-fighter share of the recommended
 fleet (percent 0-100), computed server-side in routes.py with the default
-resource weights (M:2.0, C:1.0, D:1.0). Because LF are cheap, count-share
+resource weights (M:1.0, C:1.0, D:1.0 — uniform). Because LF are cheap, count-share
 and cost-share differ; cost-share is the "resources invested" measure.
 
 Deterministic by construction:
@@ -82,14 +82,15 @@ def test_cruiser_only_fleet_share_0():
 
 def test_mixed_60pct_lf_by_count_below_100():
     """60% LF by count: cost-share is well below the count-share because
-    cruisers are far more expensive per hull (weighted 49k vs 7k per unit).
+    cruisers are far more expensive per hull (weighted 29k vs 4k per unit).
 
-    Exact expectation: 60*7000 / (60*7000 + 40*49000) * 100 = 17.6%.
+    Exact expectation: 60*4000 / (60*4000 + 40*29000) * 100 = 17.14%.
+    # weight (1.0,1.0,1.0); was 17.6% under M:2.0
     """
     fleet = {"light_fighter": 60, "cruiser": 40}
     share = _lf_cost_share(fleet)
     assert share < 100.0
-    assert share == pytest.approx(17.6, abs=0.1)
+    assert share == pytest.approx(17.14, abs=0.1)
 
 
 def test_empty_fleet_share_0():
@@ -108,7 +109,7 @@ def test_ui_wiring_lf_banner(client):
     index = client.get("/").text
     assert 'id="lf-share-banner"' in index
     assert 'class="lf-banner hidden"' in index
-    assert "v=20260828a" in index  # cache-bust bumped with LF-share banner
+    assert "v=20260829a" in index  # cache-bust bumped with uniform 1:1:1 weights
 
     js = client.get("/static/app.js").text
     assert "lf_share" in js

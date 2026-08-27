@@ -23,17 +23,19 @@ _log = get_logger("ogame.api.routes")
 router = APIRouter()
 
 # Resource weights used for the server-side lf_share metric. Mirrors the
-# OptimizeRequest default (M:2.0, C:1.0, D:1.0) so the metric matches what
-# the GA optimizes for, independent of what the client displays.
-_LF_SHARE_WEIGHTS = (2.0, 1.0, 1.0)
+# OptimizeRequest default (M:1.0, C:1.0, D:1.0 — uniform, no M bias) so the
+# metric matches what the GA optimizes for, independent of what the client
+# displays.
+_LF_SHARE_WEIGHTS = (1.0, 1.0, 1.0)
 
 
 def _lf_cost_share(fleet: dict) -> float:
     """Cost-proportional light-fighter share of ``fleet`` in percent (0-100).
 
-    Uses weighted cost (M*2 + C*1 + D*1 per unit) so cheap-but-numerous LF
-    are measured by resources invested, not by hull count. Returns 0.0 for
-    empty fleets, zero-cost fleets, or fleets without light fighters.
+    Uses weighted cost (M*1 + C*1 + D*1 per unit, uniform weights) so
+    cheap-but-numerous LF are measured by resources invested, not by hull
+    count. Returns 0.0 for empty fleets, zero-cost fleets, or fleets
+    without light fighters.
     """
     total_weighted = 0.0
     lf_weighted = 0.0
@@ -161,7 +163,7 @@ def run_optimize(req: OptimizeRequest) -> OptimizeResponse:
             debris_pct=req.debris_pct,
             deuterium_in_debris=req.deuterium_in_debris,
             optimization_target=req.optimization_target,
-            resource_weights=tuple(req.resource_weights) if req.resource_weights else (2.0, 1.0, 1.0),
+            resource_weights=tuple(req.resource_weights) if req.resource_weights else (1.0, 1.0, 1.0),
             preference_beta=req.preference_beta if req.preference_beta is not None else 0.05,
             hyperspace_tech=req.hyperspace_tech,
             collector_class=req.collector_class,
