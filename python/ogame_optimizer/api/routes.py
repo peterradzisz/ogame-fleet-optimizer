@@ -15,11 +15,43 @@ from ogame_optimizer.api.schemas import (
     OptimizeRequest, OptimizeResponse, CombatRequest, CombatResponse,
 )
 from ogame_optimizer.core.combat import simulate_batch
+from ogame_optimizer.core.fleet import SHIPS_COST
 from ogame_optimizer.optimizer.orchestration import optimize, OptimizationResult
 
 
 _log = get_logger("ogame.api.routes")
 router = APIRouter()
+
+# Resource weights used for the server-side lf_share metric. Mirrors the
+# OptimizeRequest default (M:2.0, C:1.0, D:1.0) so the metric matches what
+# the GA optimizes for, independent of what the client displays.
+_LF_SHARE_WEIGHTS = (2.0, 1.0, 1.0)
+
+
+def _lf_cost_share(fleet: dict) -> float:
+    """Cost-proportional light-fighter share of ``fleet`` in percent (0-100).
+
+    Uses weighted cost (M*2 + C*1 + D*1 per unit) so cheap-but-numerous LF
+    are measured by resources invested, not by hull count. Returns 0.0 for
+    empty fleets, zero-cost fleets, or fleets without light fighters.
+    """
+    total_weighted = 0.0
+    lf_weighted = 0.0
+    for ship, count in fleet.items():
+        cost = SHIPS_COST.get(ship)
+        if cost is None or count <= 0:
+            continue
+        weighted = (
+            cost[0] * _LF_SHARE_WEIGHTS[0]
+            + cost[1] * _LF_SHARE_WEIGHTS[1]
+            + cost[2] * _LF_SHARE_WEIGHTS[2]
+        )
+        total_weighted += weighted * count
+        if ship == "light_fighter":
+            lf_weighted += weighted * count
+    if total_weighted <= 0.0 or lf_weighted <= 0.0:
+        return 0.0
+    return round(100.0 * lf_weighted / total_weighted, 1)
 
 _TEMPLATES_DIR = Path(__file__).parent.parent / "web" / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
@@ -191,6 +223,7 @@ def run_optimize(req: OptimizeRequest) -> OptimizeResponse:
             additions_cost_deuterium=result.additions_cost_deuterium,
             kill_estimates=result.kill_estimates,
             win_threshold_met=result.win_threshold_met,
+            lf_share=_lf_cost_share(result.recommended_fleet),
             alternatives=[
                 {
                     "label": alt.label,

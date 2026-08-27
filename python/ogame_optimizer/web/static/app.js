@@ -209,6 +209,19 @@
         banner.className = "win-banner hidden";
       }
     }
+    // LF-dominance banner: only when the scenario IS winnable (the
+    // unwinnable case is already explained by the win-threshold banner
+    // above) and light fighters dominate the fleet by cost share.
+    var lfBanner = document.getElementById("lf-share-banner");
+    if (lfBanner) {
+      var lf = data.lf_share != null ? data.lf_share : 0;
+      if (lf >= 60.0 && data.win_threshold_met === true) {
+        lfBanner.textContent = "Light fighters dominate this fleet (" + Math.round(lf) + "% by cost). The scenario IS winnable at this budget — consider raising the Budget Multiplier slightly (try 1.2–1.5×) for a stronger composition. The LF-heavy mix is mathematically valid but fragile.";
+        lfBanner.className = "lf-banner";
+      } else {
+        lfBanner.className = "lf-banner hidden";
+      }
+    }
     renderResultsCore(data);
     buildAltPills(data);
     lastResult = data;
@@ -1127,6 +1140,7 @@ if (parseBtn) {
       expected_loss_stddev: data.expected_loss_stddev,
       win_probability: data.win_probability,
       win_threshold_met: data.win_threshold_met,
+      lf_share: data.lf_share,
       confidence_interval_95: data.confidence_interval_95,
       sims_run_final: data.sims_run_final,
       debris_metal: data.debris_metal,

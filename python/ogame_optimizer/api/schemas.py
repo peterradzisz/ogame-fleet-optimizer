@@ -185,6 +185,12 @@ class OptimizeResponse(BaseModel):
     # (1 - win_probability) >= 0.95). False means unwinnable at the chosen
     # budget -- the recommended fleet is the least-loss option, not a winner
     win_threshold_met: bool = True
+    # Cost-proportional light-fighter share of the recommended fleet, in
+    # percent (0-100). Computed server-side in routes.py with the default
+    # resource weights (M:2.0, C:1.0, D:1.0) as lf_weighted_cost /
+    # total_weighted_cost * 100. 100 = pure-LF fleet, 0 = no LF cost.
+    # Default 0.0 keeps old consumers / legacy snapshots safe.
+    lf_share: float = 0.0
     # Alternative fleet compositions ("Option B/C"): up to 2 genuinely
     # different, quality-gated fleets. Each entry dict has keys:
     #   label, fleet, win_probability, expected_loss_mean,

@@ -89,7 +89,7 @@ def test_ui_wiring_win_banner(client):
     index = client.get("/").text
     assert 'id="win-threshold-banner"' in index
     assert 'class="win-banner hidden"' in index
-    assert "v=20260827a" in index  # cache-bust bumped (now: ship-cost chart)
+    assert "v=20260828a" in index  # cache-bust bumped (now: LF-share banner)
 
     js = client.get("/static/app.js").text
     assert "data.win_threshold_met === false" in js  # strict guard: only === false shows
