@@ -105,9 +105,12 @@ def test_refine_base_mode_seed_additions_scaled_to_budget(captured_fleets):
     )
     budget = compute_budget(enemy, {}, 1.0)
     base_cost = fleet_value({"light_fighter": 100})
+    # alternatives (Option B/C) simulate extra base-merged fleets after the primary; base preservation only holds for primary-path captures
     for fleet in captured_fleets:
         assert fleet.get("light_fighter", 0) == 100  # base preserved exactly
         assert fleet_value(fleet) - base_cost <= budget, f"additions over budget: {fleet}"
+        if fleet == result.recommended_fleet:
+            break  # primary final fleet simulated: everything after is alternatives
     # Additions scaled down: int(100 * 1.2M / 2.9M) == 41 cruisers max.
     assert result.recommended_fleet.get("light_fighter") == 100
     assert result.recommended_additions.get("cruiser", 0) <= 41

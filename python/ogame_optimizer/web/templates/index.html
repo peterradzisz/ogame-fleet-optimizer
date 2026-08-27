@@ -172,6 +172,7 @@ Large Shield Dome / 1"></textarea>
       <label>Seed (optional)<input type="number" name="seed" placeholder="42"></label>
       <label>GA Time (seconds)<input type="number" id="ga_time" value="5" min="1" max="60"></label>
       <label>Final Sims<input type="number" id="final_sims" value="500" min="100" max="5000" step="100"></label>
+      <label class="checkbox-label"><input type="checkbox" id="include_alternatives" checked> Alternatives (B/C)</label>
     </div>
   </fieldset>
 
@@ -305,6 +306,7 @@ Large Shield Dome / 1"></textarea>
   </div>
   <div id="error" class="error hidden"></div>
   <div id="metrics"></div>
+  <div id="alt-pills" class="alt-pills hidden"></div>
   <div class="fleet-tables">
     <div class="fleet-table-col">
       <h3>Recommended Fleet <span class="copy-btns"><button type="button" class="copy-btn" onclick="copyFleetTable('text')">📋 Text</button><button type="button" class="copy-btn" onclick="copyFleetTable('html')">📋 HTML</button><button type="button" class="copy-btn" onclick="copyFleetOGame()">📋 OGame</button></span></h3>
@@ -344,5 +346,5 @@ Large Shield Dome / 1"></textarea>
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/app.js?v=20260826c"></script>
+<script src="/static/app.js?v=20260826d"></script>
 {% endblock %}

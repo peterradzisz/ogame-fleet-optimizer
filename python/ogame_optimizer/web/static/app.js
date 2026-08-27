@@ -8,6 +8,9 @@
   const HISTORY_MAX = 6;
   let historyList = []; // array of saved result snapshots
   let activeTab = "counter"; // "counter" or "myfleet"
+  let lastResultsData = null; // latest primary response (source of alternatives)
+  let currentAltIdx = 0; // 0 = primary (Option A), 1..2 = alternatives (B/C)
+  let currentViewData = null; // data last rendered by renderResultsCore (copy follows selection)
 
   const SHIP_KEYS = ["light_fighter","heavy_fighter","cruiser","battleship","battlecruiser","bomber","destroyer","deathstar","small_cargo","large_cargo","espionage_probe","pathfinder","recycler","reaper"];
   const DEFENSE_KEYS = ["rocket_launcher","light_laser","heavy_laser","gauss_cannon","ion_cannon","plasma_turret","small_shield_dome","large_shield_dome"];
@@ -143,6 +146,7 @@
           parseFloat((document.getElementById('weight_d')||{value:'1.0'}).value || '1.0'),
         ],
         preference_beta: parseFloat((document.getElementById('preference_beta')||{value:'0.05'}).value || '0.05'),
+        include_alternatives: document.getElementById('include_alternatives') ? document.getElementById('include_alternatives').checked : true,
       };
 
       // Check: 0.0x requires base fleet
@@ -194,7 +198,8 @@
   });
 
   function renderResults(data) {
-    metrics.innerHTML = "";
+    lastResultsData = data;
+    currentAltIdx = 0;
     var banner = document.getElementById("win-threshold-banner");
     if (banner) {
       if (data.win_threshold_met === false) {
@@ -204,6 +209,23 @@
         banner.className = "win-banner hidden";
       }
     }
+    renderResultsCore(data);
+    buildAltPills(data);
+    lastResult = data;
+    pushHistory(data);
+    // Auto-scroll to results on first run (or when results were hidden)
+    if (!historyList || historyList.length <= 1) {
+      results.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+    if (refineBtn) refineBtn.disabled = false;
+  }
+
+  // Renders metric cards + all result tables from `data`. Called for the
+  // primary result (via renderResults) and for alternative views (selectAlt).
+  // History/banner/refine side effects intentionally live in renderResults.
+  function renderResultsCore(data) {
+    currentViewData = data;
+    metrics.innerHTML = "";
     var wp = data.win_probability;
     var ci = data.confidence_interval_95 || [0, 0];
     var rawLoss = data.raw_loss_mean || data.expected_loss_mean || 0;
@@ -527,13 +549,95 @@
 
     renderEnemyDefenses();
     results.classList.remove("hidden");
-    lastResult = data;
-    pushHistory(data);
-    // Auto-scroll to results on first run (or when results were hidden)
-    if (!historyList || historyList.length <= 1) {
-      results.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  // ---- Fleet alternatives: option pills above the fleet tables ----
+  // Pills render Option A (primary recommendation) plus one pill per API
+  // alternative (up to 2). Legacy snapshots without alternatives simply
+  // keep the container hidden - primary view is untouched.
+  function buildAltPills(data) {
+    var box = document.getElementById("alt-pills");
+    if (!box) return;
+    box.innerHTML = "";
+    if (!data || !data.alternatives || !data.alternatives.length) {
+      box.classList.add("hidden");
+      return;
     }
-    if (refineBtn) refineBtn.disabled = false;
+    box.classList.remove("hidden");
+    var names = ["Option A", "Option B", "Option C"];
+    var total = Math.min(data.alternatives.length + 1, names.length);
+    for (var i = 0; i < total; i++) {
+      (function(idx) {
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "alt-pill" + (idx === currentAltIdx ? " active" : "");
+        var label = names[idx];
+        if (idx > 0) {
+          var alt = data.alternatives[idx - 1] || {};
+          var diff = alt.difference_vs_primary;
+          if (diff != null) {
+            label += ' <span class="delta">Δ' + Math.round(diff * 100) + "%</span>";
+          }
+        }
+        btn.innerHTML = label;
+        btn.addEventListener("click", function() { selectAlt(idx); });
+        box.appendChild(btn);
+      })(i);
+    }
+  }
+
+  // Swaps the rendered fleet between primary (0) and alternatives (1..2).
+  // Client-side only: no refetch, no pushHistory, no banner change - the
+  // banner reflects the primary run's threshold state either way.
+  function selectAlt(i) {
+    if (!lastResultsData) return;
+    var alts = lastResultsData.alternatives || [];
+    if (i < 0 || i > alts.length || i > 2) return;
+    currentAltIdx = i;
+    if (i === 0) {
+      renderResultsCore(lastResultsData);
+    } else {
+      var alt = alts[i - 1] || {};
+      var viewData = {};
+      for (var k in lastResultsData) {
+        if (Object.prototype.hasOwnProperty.call(lastResultsData, k)) viewData[k] = lastResultsData[k];
+      }
+      viewData.recommended_fleet = alt.fleet || {};
+      viewData.win_probability = alt.win_probability;
+      viewData.expected_loss_mean = alt.expected_loss_mean;
+      viewData.expected_loss_stddev = alt.expected_loss_stddev;
+      viewData.confidence_interval_95 = alt.confidence_interval_95;
+      viewData.fleet_value = (alt.fleet_cost_metal || 0) + (alt.fleet_cost_crystal || 0) + (alt.fleet_cost_deuterium || 0);
+      viewData.fleet_cost_metal = alt.fleet_cost_metal;
+      viewData.fleet_cost_crystal = alt.fleet_cost_crystal;
+      viewData.fleet_cost_deuterium = alt.fleet_cost_deuterium;
+      viewData.kill_estimates = alt.kill_estimates;
+      // Null out primary-only final-sim artifacts so cards/tables show "-"
+      // or 0 instead of stale numbers from the primary's validation run.
+      viewData.fleet_analysis = null;
+      viewData.fleet_lost_pct = null;
+      viewData.ships_lost_count = null;
+      viewData.ships_initial_count = null;
+      viewData.raw_loss_mean = null;
+      viewData.debris_metal = null;
+      viewData.debris_crystal = null;
+      viewData.debris_deuterium = null;
+      viewData.debris_total = null;
+      viewData.net_profit = null;
+      viewData.net_profit_pct = null;
+      viewData.sims_run_final = "—";
+      viewData.recyclers_needed = null;
+      viewData.min_gain_required = null;
+      viewData.min_gain_met = null;
+      viewData.actual_roi_pct = null;
+      viewData.ga_improvement_pct = null;
+      viewData.additions_cost_metal = null;
+      viewData.additions_cost_crystal = null;
+      viewData.additions_cost_deuterium = null;
+      viewData.base_fleet = null;
+      renderResultsCore(viewData);
+    }
+    buildAltPills(lastResultsData);
   }
 
   // ---- Clear refine when the scenario changes ----
@@ -857,9 +961,12 @@ if (parseBtn) {
   }
 
   function copyFleetTable(format) {
-    if (!lastResult) return;
-    var fleet = lastResult.recommended_fleet || {};
-    var analysis = lastResult.fleet_analysis || {};
+    // Copy what is currently rendered: alt views (Option B/C) replace
+    // recommended_fleet, so prefer the rendered view over the primary result.
+    var src = currentViewData || lastResult;
+    if (!src) return;
+    var fleet = src.recommended_fleet || {};
+    var analysis = src.fleet_analysis || {};
     var rows = [];
     var totalCost = 0;
     for (var k in fleet) {
@@ -1042,6 +1149,7 @@ if (parseBtn) {
       min_gain_required: data.min_gain_required,
       min_gain_met: data.min_gain_met,
       actual_roi_pct: data.actual_roi_pct,
+      alternatives: data.alternatives,
     };
   }
   function pushHistory(data) {

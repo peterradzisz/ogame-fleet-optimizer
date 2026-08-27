@@ -247,7 +247,7 @@ def test_ui_strings_costs_kills_transparency(client):
     assert "Fleet Cost (M/C/D)" in js
     assert "Additions Cost (M/C/D)" in js
     index = client.get("/").text
-    assert "v=20260826c" in index  # cache-bust bumped with this feature
+    assert "v=20260826d" in index  # cache-bust bumped with this feature (T3 alternatives UI)
 
 
 # ---------------------------------------------------------------------------
