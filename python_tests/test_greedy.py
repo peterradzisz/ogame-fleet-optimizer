@@ -86,7 +86,8 @@ def test_counter_map_reaper_counters_battleship_and_bomber():
 
 
 def test_counter_map_enemy_reaper_swarm():
-    """Enemy reapers are countered by light fighter swarm (only deathstar RF 30 is cost-absurd)."""
+    # official: Fandom Reaper page + DS infobox (2:1 vs stale DS body table)
+    """Enemy reapers are countered by light fighter swarm (only deathstar RF 10 is cost-absurd)."""
     assert COUNTER_MAP["reaper"] == "light_fighter"
 
 

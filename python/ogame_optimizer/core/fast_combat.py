@@ -116,7 +116,7 @@ RAPIDFIRE: Dict[tuple, int] = {
     ("pathfinder", "cruiser"): 3,
     # Deathstar: vs EP=1250, SS=1250, Crawler=1250, LF=200, HF=100,
     # CR=33, BS=30, BC=15 (FIXED: was 250), Bo=25, De=5, SC=250, LC=250,
-    # Pathfinder=30, Reaper=30, defenses as listed
+    # Recycler=250, Pathfinder=30, Reaper=10, defenses as listed
     ("deathstar", "espionage_probe"): 1250,
     ("deathstar", "solar_satellite"): 1250,
     ("deathstar", "crawler"): 1250,
@@ -126,11 +126,14 @@ RAPIDFIRE: Dict[tuple, int] = {
     ("deathstar", "battleship"): 30,
     ("deathstar", "battlecruiser"): 15,  # FIXED: was 250
     ("deathstar", "pathfinder"): 30,
-    ("deathstar", "reaper"): 30,
+    ("deathstar", "reaper"): 10,  # official: Fandom Reaper page + DS infobox (2:1 vs stale DS body table)
     ("deathstar", "bomber"): 25,
     ("deathstar", "destroyer"): 5,
     ("deathstar", "small_cargo"): 250,
     ("deathstar", "large_cargo"): 250,
+    # official: DS infobox + DS body table + Recycler page all say 250
+    # (Rust engine omits this row: Recycler is Python-only, stripped pre-routing)
+    ("deathstar", "recycler"): 250,
     ("deathstar", "rocket_launcher"): 200,
     ("deathstar", "light_laser"): 200,
     ("deathstar", "heavy_laser"): 100,
