@@ -560,8 +560,112 @@
       else legend.classList.add("hidden");
     }
 
+    // Cost-share bar follows the rendered fleet (primary or Option B/C)
+    renderFleetShareBar(data.recommended_fleet);
     renderEnemyDefenses();
     results.classList.remove("hidden");
+  }
+
+  // ---- Fleet composition by cost-share (thin stacked bar) ----
+  // Answers "what is this fleet made of, by cost" at a glance: a 36%-by-cost
+  // reaper share reads instantly even when 774k light fighters dominate by
+  // count (count share vs cost share confusion is the whole point).
+  // Pure client-side math from SHIP_META mcd x counts - recomputed on every
+  // renderResultsCore pass, so Option B/C swaps re-render it for free.
+  // Fixed color map (not positional) so re-renders and history look identical.
+  var FSB_COLORS = {
+    "light_fighter":   "#f5b043", // amber - the cheap-fodder workhorse
+    "heavy_fighter":   "#d98cb3", // rose
+    "cruiser":         "#8aa9ff", // accent blue
+    "battleship":      "#6478d6", // indigo
+    "battlecruiser":   "#7fd8c3", // light teal
+    "bomber":          "#a86a3c", // muted brown
+    "destroyer":       "#e8735c", // coral
+    "deathstar":       "#9aa5b8", // steel
+    "small_cargo":     "#a3b07a", // olive
+    "large_cargo":     "#6f9e63", // green
+    "espionage_probe": "#d9d9e3", // silver
+    "pathfinder":      "#35c9b0", // teal
+    "recycler":        "#8f7fd8", // soft violet
+    "reaper":          "#c084fc", // violet - visually far from LF amber
+  };
+  function renderFleetShareBar(fleet) {
+    var host = document.getElementById("fleet-share-bar");
+    if (!host) return;
+    var segBox = host.querySelector(".fsb-segments");
+    var legendBox = host.querySelector(".fsb-legend");
+    if (!segBox || !legendBox) return;
+    segBox.innerHTML = "";
+    legendBox.innerHTML = "";
+    var rows = [];
+    var totalCost = 0;
+    if (fleet) {
+      for (var k in fleet) {
+        if (!Object.prototype.hasOwnProperty.call(fleet, k)) continue;
+        var cnt = fleet[k] || 0;
+        if (cnt <= 0) continue;
+        var meta = SHIP_META[k];
+        if (!meta || !meta.mcd) continue; // legacy keys without cost data
+        var cost = (meta.mcd[0] + meta.mcd[1] + meta.mcd[2]) * cnt;
+        if (cost <= 0) continue;
+        rows.push({ key: k, cost: cost });
+        totalCost += cost;
+      }
+    }
+    if (rows.length === 0 || totalCost <= 0) {
+      host.classList.add("hidden");
+      return;
+    }
+    host.classList.remove("hidden");
+    // Shares sum to ~100% (1-decimal display; no forced adjustment).
+    rows.sort(function(a, b) {
+      if (b.cost !== a.cost) return b.cost - a.cost;
+      return a.key < b.key ? -1 : (a.key > b.key ? 1 : 0);
+    });
+    for (var s = 0; s < rows.length; s++) {
+      var r = rows[s];
+      var share = r.cost / totalCost;
+      var seg = document.createElement("div");
+      seg.className = "fsb-segment";
+      // flex-grow proportional to share; css min-width floors tiny shares
+      seg.style.flexGrow = String(Math.round(share * 1000));
+      seg.style.background = FSB_COLORS[r.key] || "#4a5570";
+      seg.title = r.key.replace(/_/g, " ") + " — " + fmtNum(r.cost) + " (" + (share * 100).toFixed(1) + "%)";
+      segBox.appendChild(seg);
+    }
+    // Legend: entries below 0.5% get no own key; hidden types (>= 1) are
+    // collapsed into a final "other" entry so the tail stays accounted for.
+    var hiddenShare = 0;
+    var hiddenCount = 0;
+    for (var li = 0; li < rows.length; li++) {
+      var lr = rows[li];
+      var lShare = lr.cost / totalCost;
+      if (lShare < 0.005) {
+        hiddenShare += lShare;
+        hiddenCount++;
+        continue;
+      }
+      legendBox.appendChild(buildFsbKey(lr.key, lShare));
+    }
+    if (hiddenCount >= 1) {
+      legendBox.appendChild(buildFsbKey(null, hiddenShare));
+    }
+  }
+  function buildFsbKey(key, share) {
+    var item = document.createElement("span");
+    item.className = "fsb-key";
+    var swatch = document.createElement("span");
+    swatch.className = "fsb-swatch";
+    swatch.style.background = (key && FSB_COLORS[key]) || "#4a5570";
+    var label = document.createElement("span");
+    label.textContent = (key ? key.replace(/_/g, " ") : "other") + " ";
+    var pct = document.createElement("span");
+    pct.className = "fsb-pct";
+    pct.textContent = (share * 100).toFixed(1) + "%";
+    item.appendChild(swatch);
+    item.appendChild(label);
+    item.appendChild(pct);
+    return item;
   }
 
   // ---- Fleet alternatives: option pills above the fleet tables ----
