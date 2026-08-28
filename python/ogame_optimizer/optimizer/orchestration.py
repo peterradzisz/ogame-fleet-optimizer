@@ -609,6 +609,203 @@ def _prune_dead_weight(
     return pruned, list(pruned_names)
 
 
+# --- Phase C greedy swap refinement ----------------------------------------
+#
+# The old Phase C validated ONE radical all-at-once prune (every dead-weight
+# type removed simultaneously) and kept the original fleet whenever that
+# single extreme variant lost - even when the sensitivity numbers promised
+# large improvements for the INDIVIDUAL single-type swaps. The helpers below
+# implement the promised-swap replacement: each flagged type is tested as
+# its own budget-neutral swap, largest promise first, accepted greedily
+# only when the validated effective loss improves materially without
+# trading away win probability.
+
+# Minimum promised improvement (relative loss reduction in the sensitivity
+# single-removal probe) before a swap candidate earns validation sims.
+_SWAP_PROMISE_PCT = 15.0
+# A validated swap must beat the incumbent effective loss by more than
+# this relative margin to be accepted (guards against sim noise).
+_SWAP_ACCEPT_PCT = 5.0
+# Wall-clock cap for the whole greedy pass. Checked BETWEEN candidates
+# only (runtime guard - acceptance decisions never depend on the clock).
+_SWAP_TIME_BUDGET_S = 15.0
+
+
+def _swap_variant(
+    fleet: Dict[str, int],
+    ship: str,
+    target: str,
+    base_fleet: Optional[Dict[str, int]] = None,
+) -> Optional[Dict[str, int]]:
+    """Single-swap variant: drop ``ship`` and redistribute its freed budget
+    into ``target`` (integer floor division).
+
+    Mirrors the redistribution math of the sensitivity probes in
+    ``_sensitivity_analysis`` (its ``redist->TARGET +N`` variants): in
+    base_fleet mode only the ADDITIONS of ``ship`` are swapped out (the
+    base count is locked). Returns None when there is nothing to move.
+    """
+    count = fleet.get(ship, 0)
+    if count <= 0:
+        return None
+    if base_fleet and ship in base_fleet:
+        base_count = min(base_fleet[ship], count)
+        if count <= base_count:
+            return None  # locked base type, no additions to swap out
+        variant = dict(fleet)
+        variant[ship] = base_count
+        freed_budget = sum(SHIPS_COST.get(ship, (0, 0, 0))) * (count - base_count)
+    else:
+        variant = {k: v for k, v in fleet.items() if k != ship}
+        freed_budget = sum(SHIPS_COST.get(ship, (0, 0, 0))) * count
+    target_cost = sum(SHIPS_COST.get(target, (0, 0, 0)))
+    if target_cost <= 0 or freed_budget <= 0:
+        return None
+    variant[target] = variant.get(target, 0) + freed_budget // target_cost
+    return {k: v for k, v in variant.items() if v > 0}
+
+
+def _enforce_swap_budget(
+    fleet: Dict[str, int],
+    base_fleet: Optional[Dict[str, int]],
+    budget: int,
+) -> Dict[str, int]:
+    """Proportional scale-down of an over-budget swap variant (defensive -
+    swaps are cost-neutral by construction, floor division only loses).
+    Mirrors the alternatives engine's ``_enforce_budget``: in base_fleet
+    mode only the additions are scaled (the base is a sunk cost)."""
+    if base_fleet:
+        adds = {s: max(0, fleet.get(s, 0) - base_fleet.get(s, 0)) for s in fleet}
+        cost = fleet_value(adds)
+        if cost > budget and cost > 0:
+            scale = budget / cost
+            adds = {k: int(v * scale) for k, v in adds.items() if int(v * scale) > 0}
+            return _merge_fleet(base_fleet, adds)
+        return fleet
+    cost = fleet_value(fleet)
+    if cost > budget and cost > 0:
+        scale = budget / cost
+        return {k: int(v * scale) for k, v in fleet.items() if int(v * scale) > 0}
+    return fleet
+
+
+def _swap_accepted(
+    delta_pct: float,
+    candidate_wp: float,
+    incumbent_wp: float,
+    mode: str = "attack",
+) -> bool:
+    """Greedy acceptance gate for one validated swap candidate.
+
+    Accept only when the effective loss improves by more than
+    ``_SWAP_ACCEPT_PCT`` percent AND the win probability does not drop
+    below the pre-swap value (attack mode: higher wp is better; defend
+    mode: lower attacker wp is better)."""
+    if delta_pct >= -_SWAP_ACCEPT_PCT:
+        return False
+    if mode == "attack":
+        return candidate_wp >= incumbent_wp - 1e-6
+    return candidate_wp <= incumbent_wp + 1e-6
+
+
+def _greedy_swap_refine(
+    fleet: Dict[str, int],
+    incumbent_loss: float,
+    incumbent_wp: float,
+    sensitivity: Dict[str, Dict],
+    enemy_fleet: Dict[str, int],
+    enemy_defenses: Dict[str, int],
+    attacker_tech: tuple,
+    enemy_tech: tuple,
+    mode: str,
+    base_fleet: Optional[Dict[str, int]],
+    budget: int,
+    base_seed: int,
+    n_sims: int,
+    debris_pct: float,
+    deuterium_in_debris: bool,
+    loss_scale: float,
+    resource_weights: tuple,
+    preference_beta: float,
+) -> tuple:
+    """Greedy individual-swap acceptance over the sensitivity findings.
+
+    One pass, no sensitivity re-run: candidates are the flagged types whose
+    sensitivity probe promised >= ``_SWAP_PROMISE_PCT`` improvement, tested
+    largest-promise-first against the CURRENT fleet (accepted swaps update
+    it). Each candidate is validated with its own deterministic seed offset
+    (``base_seed + 7001 + 17*idx``) so the primary path's RNG is untouched.
+
+    Returns ``(fleet, effective_loss, win_probability, n_accepted)``; when
+    nothing is accepted the inputs are returned unchanged (identical to the
+    historical keep-original behavior).
+    """
+    candidates = sorted(
+        (s for s, info in sensitivity.items()
+         if isinstance(info, dict)
+         and info.get("impact_pct", 0) <= -_SWAP_PROMISE_PCT
+         and info.get("redistributed_to")),
+        key=lambda s: sensitivity[s].get("impact_pct", 0),  # largest promise first
+    )
+    if not candidates:
+        _log.info("  Swap pass: no flagged type promises >= %.0f%% improvement",
+                  _SWAP_PROMISE_PCT)
+        return dict(fleet), incumbent_loss, incumbent_wp, 0
+    _log.info("  Swap pass: %d candidate(s) %s (largest promise first)",
+              len(candidates), candidates)
+
+    cur_fleet = {s: c for s, c in fleet.items() if c > 0}
+    cur_loss = incumbent_loss
+    cur_wp = incumbent_wp
+    accepted = 0
+    t_start = time.time()
+    for idx, ship in enumerate(candidates):
+        # Runtime-only wall-clock cap, checked between candidates: skip the
+        # remainder once the pass has spent ~15s validating swaps.
+        if time.time() - t_start > _SWAP_TIME_BUDGET_S:
+            _log.info("  Swap pass: %.0fs time cap reached - skipping %d remaining candidate(s)",
+                      _SWAP_TIME_BUDGET_S, len(candidates) - idx)
+            break
+        if cur_loss <= 0:
+            break  # a zero-loss incumbent cannot be improved
+        target = sensitivity[ship]["redistributed_to"]
+        variant = _swap_variant(cur_fleet, ship, target, base_fleet)
+        if not variant or sum(variant.values()) <= 0:
+            _log.info("  --- Phase C: swap %s->%s skipped (nothing to move) ---", ship, target)
+            continue
+        variant = _enforce_swap_budget(variant, base_fleet, budget)
+        if not variant or sum(variant.values()) <= 0:
+            _log.info("  --- Phase C: swap %s->%s skipped (empty after budget enforcement) ---",
+                      ship, target)
+            continue
+        val = simulate_batch(
+            attacker=variant, defender=enemy_fleet,
+            defender_defenses=enemy_defenses, attacker_tech=attacker_tech,
+            defender_tech=enemy_tech, n_sims=n_sims,
+            base_seed=base_seed + 7001 + 17 * idx,
+            debris_pct=debris_pct, deuterium_in_debris=deuterium_in_debris,
+        )
+        pen = resource_preference_penalty(variant, resource_weights, preference_beta)
+        eff_loss = float(val.get("mean_attacker_loss", float("inf"))) * loss_scale + pen
+        cand_wp = float(val.get("win_probability", 0.0))
+        if cur_loss == float("inf") or cur_loss != cur_loss:
+            delta_pct = -100.0  # infinite/NaN incumbent: any finite loss wins
+        else:
+            delta_pct = ((eff_loss - cur_loss) / cur_loss) * 100.0
+        if _swap_accepted(delta_pct, cand_wp, cur_wp, mode):
+            _log.info("  --- Phase C: swap %s->%s validated %+.1f%% ACCEPTED ---",
+                      ship, target, delta_pct)
+            cur_fleet, cur_loss, cur_wp = variant, eff_loss, cand_wp
+            accepted += 1
+        else:
+            _log.info("  --- Phase C: swap %s->%s validated %+.1f%% rejected "
+                      "(need >%.0f%% improvement, win not worse) ---",
+                      ship, target, delta_pct, _SWAP_ACCEPT_PCT)
+    _log.info("  Swap pass: %d accepted, loss %.0f -> %.0f",
+              accepted, incumbent_loss, cur_loss)
+    return cur_fleet, cur_loss, cur_wp, accepted
+
+
 # --- Fleet alternatives ("Option B/C") ----------------------------------
 #
 # Diversity gate: a candidate must differ from the primary (and from every
@@ -1541,59 +1738,57 @@ def optimize(
             debris_pct=debris_pct, deuterium_in_debris=deuterium_in_debris,
         )
         _prune_base_loss = float(_prune_base.get("mean_attacker_loss", 0))
+        _prune_sens_sims = 200
         _prune_sens = _sensitivity_analysis(
             fleet=ga_result.best_fleet, enemy_fleet=enemy_fleet,
             enemy_defenses=enemy_defenses, attacker_tech=attacker_tech,
             enemy_tech=enemy_tech, base_loss=_prune_base_loss,
             debris_pct=debris_pct, deuterium_in_debris=deuterium_in_debris,
-            base_seed=base_seed, n_sims=200,
+            base_seed=base_seed, n_sims=_prune_sens_sims,
             base_fleet=base_fleet if base_fleet else None,
             loss_scale=_loss_scale, resource_weights=resource_weights,
             preference_beta=preference_beta,
             max_total_seconds=20.0,
         )
-        _pruned, _pruned_names = _prune_dead_weight(ga_result.best_fleet, _prune_sens)
-        if _pruned and sum(_pruned.values()) > 0:
-            _log.info("  Pruning %d dead-weight ships: %s", len(_pruned_names), _pruned_names)
-            # Budget-enforce the pruned fleet.
-            # In base_fleet mode, ONLY additions are scaled (base is sunk cost).
-            if base_fleet:
-                _pruned_add = {s: max(0, _pruned.get(s, 0) - base_fleet.get(s, 0))
-                               for s in _pruned}
-                _pa_cost = _fv(_pruned_add)
-                if _pa_cost > _ga_budget and _pa_cost > 0:
-                    _log.warning("  Pruned additions over budget: %d > %d, scaling", _pa_cost, _ga_budget)
-                    _scale = _ga_budget / _pa_cost
-                    _pruned_add = {k: max(0, int(v * _scale)) for k, v in _pruned_add.items() if int(v * _scale) > 0}
-                    _pruned = _merge_fleet(base_fleet, _pruned_add)
-            else:
-                _pfv = _fv(_pruned)
-                if _pfv > budget and _pfv > 0:
-                    _scale = budget / _pfv
-                    _pruned = {k: max(0, int(v * _scale)) for k, v in _pruned.items() if int(v * _scale) > 0}
-            # Validate the pruned fleet DIRECTLY (no GA refinement). The
-            # sensitivity analysis already identified the right move (remove
-            # ship X, redistribute to the best positive-impact ship); applying
-            # it and validating is more reliable than running a short GA that
-            # explores AWAY from the good pruned starting point.
-            _prune_val = simulate_batch(
-                attacker=_pruned, defender=enemy_fleet,
-                defender_defenses=enemy_defenses, attacker_tech=attacker_tech,
-                defender_tech=enemy_tech, n_sims=200, base_seed=base_seed + 7777,
-                debris_pct=debris_pct, deuterium_in_debris=deuterium_in_debris,
-            )
-            _prune_pen = resource_preference_penalty(_pruned, resource_weights, preference_beta)
-            _prune_eff_loss = float(_prune_val.get("mean_attacker_loss", float("inf"))) * _loss_scale + _prune_pen
-            if _prune_eff_loss < global_best_loss:
-                global_best_fleet = dict(_pruned)
-                global_best_loss = _prune_eff_loss
-                ga_result.best_fleet = global_best_fleet
-                _log.info("  Prune: IMPROVED to %.0f (was %.0f)",
-                          global_best_loss, _prune_base_loss * _loss_scale + _prune_pen)
-            else:
-                _log.info("  Prune: no improvement (kept original)")
+        # Greedy individual-swap acceptance. The old all-at-once prune
+        # (remove EVERY dead-weight type simultaneously into one radical
+        # variant, validate that single fleet) kept the original whenever
+        # the radical fleet lost - ignoring the individual single-type
+        # swaps the sensitivity numbers actually promised. Instead: build
+        # each promised swap on its own (drop type X, redistribute its
+        # budget to the sensitivity-suggested target), validate them
+        # individually (largest promise first), and accept greedily. When
+        # nothing is accepted the incumbent is untouched - identical to
+        # the historical keep-original path (the swaps validate on their
+        # own seed offsets, so the primary path's RNG never moves).
+        _swap_fleet, _swap_loss, _swap_wp, _swap_n = _greedy_swap_refine(
+            fleet=ga_result.best_fleet,
+            incumbent_loss=global_best_loss,
+            incumbent_wp=float(_prune_base.get("win_probability", 0.0)),
+            sensitivity=_prune_sens,
+            enemy_fleet=enemy_fleet,
+            enemy_defenses=enemy_defenses,
+            attacker_tech=attacker_tech,
+            enemy_tech=enemy_tech,
+            mode=mode,
+            base_fleet=base_fleet if base_fleet else None,
+            budget=_ga_budget,
+            base_seed=base_seed,
+            n_sims=max(120, _prune_sens_sims),
+            debris_pct=debris_pct,
+            deuterium_in_debris=deuterium_in_debris,
+            loss_scale=_loss_scale,
+            resource_weights=resource_weights,
+            preference_beta=preference_beta,
+        )
+        if _swap_n > 0:
+            _log.info("  Prune: IMPROVED to %.0f via %d accepted swap(s) (was %.0f)",
+                      _swap_loss, _swap_n, global_best_loss)
+            global_best_fleet = dict(_swap_fleet)
+            global_best_loss = _swap_loss
+            ga_result.best_fleet = global_best_fleet
         else:
-            _log.info("  No dead-weight to prune")
+            _log.info("  Prune: no improvement (kept original)")
     else:
         _log.info("  Skipped (fleet has <=2 ship types)")
     _log.info("Phase C done in %.2fs", time.time() - _prune_t0)
