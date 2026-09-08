@@ -3,6 +3,7 @@ pub mod analytical_tables;
 pub mod combat;
 pub mod rapidfire;
 pub mod ships;
+mod pyrng;
 
 use std::collections::HashMap;
 
@@ -372,6 +373,8 @@ fn _ogame_combat(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(evaluate_population_py, m)?)?;
     m.add_function(wrap_pyfunction!(analytical::simulate_analytical_combat_py, m)?)?;
     m.add_function(wrap_pyfunction!(analytical::simulate_analytical_batch_py, m)?)?;
+    m.add_function(wrap_pyfunction!(pyrng::_pyrng_probe_random, m)?)?;
+    m.add_function(wrap_pyfunction!(pyrng::_pyrng_probe_gauss, m)?)?;
     // Phase 0: touch the table loader once so import-time drift is loud, not silent.
     analytical::verify_tables_on_startup();
     Ok(())

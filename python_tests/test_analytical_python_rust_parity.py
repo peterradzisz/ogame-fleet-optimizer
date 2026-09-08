@@ -1,12 +1,11 @@
-"""Statistical parity: Rust analytical resolver vs Python fast_combat.
+"""Exact (bit-level) parity: Rust analytical resolver vs Python fast_combat.
 
-The Rust port (src/analytical.rs) uses StdRng + StandardNormal while Python
-uses MT19937 + random.gauss, so per-sim results are NOT bit-identical.
-Parity is asserted on AGGREGATES over n sims with Welch-style bounds:
-each metric must agree within max(floor, 4 * pooled standard error), so
-decisive battles get tight tolerances and near-tie battles (high per-sim
-variance) get appropriately loose ones. A systematic port bias does not
-shrink with n and will exceed the bound; sampling noise does shrink.
+The Rust port reproduces CPython's RNG stream bit-for-bit (src/pyrng.rs:
+MT19937 + genrand_res53 random() + cached Box-Muller gauss), iterates
+sides in dict insertion order, and calls the same UCRT libm functions,
+so for a given seed every battle resolves IDENTICALLY in both engines.
+These tests assert exact per-seed dict equality - far stronger than
+statistical bounds; any drift in either engine fails loudly.
 
 Battle shapes cover every resolver branch:
 - spike path (per_shot >= full HP): deathstar vs swarm
@@ -16,7 +15,7 @@ Battle shapes cover every resolver branch:
 - defense stacks, tech asymmetry, RF matchups, the user-scale scenario
 """
 
-import math
+import random
 
 import pytest
 
@@ -28,7 +27,11 @@ if not hasattr(og, "simulate_analytical_combat_py"):
         allow_module_level=True,
     )
 
-from ogame_optimizer.core.fast_combat import simulate_combat_fast  # noqa: E402
+from ogame_optimizer.core.fast_combat import (  # noqa: E402
+    _simulate_batch_fast_python,
+    simulate_batch_fast,
+    simulate_combat_fast,
+)
 
 T = (10, 10, 10)
 TECH_A = (22, 21, 21)
@@ -75,77 +78,76 @@ CASES = [
      {"gauss_cannon": 3000, "plasma_turret": 300, "light_laser": 10000}, T, T),
 ]
 
-N_SIMS = 150
-SIGMA = 4.0            # multiples of pooled standard error
-WIN_FLOOR = 0.08       # absolute floor on outcome-rate agreement
-SURV_ABS_FLOOR = 2.0   # absolute floor on survivor-mean agreement
-SURV_REL_FLOOR = 0.02  # relative floor (2% of the python mean)
-ROUNDS_FLOOR = 0.4
+SIM_KEYS = ("winner", "rounds_fought", "attacker_survivors",
+            "defender_survivors", "defender_defense_survivors",
+            "debris_metal", "debris_crystal")
+
+BATCH_CASES = ["lf_duel", "heavy_mix", "defense_stack",
+               "bomber_vs_defenses", "mini_user_scenario"]
 
 
-def _mean_std(xs):
-    n = len(xs)
-    m = sum(xs) / n
-    v = sum((x - m) ** 2 for x in xs) / n
-    return m, math.sqrt(v)
+def _case(name):
+    return next(c for c in CASES if c[0] == name)
 
 
-def _series(results):
-    """Per-sim survivor series per key + winner series + rounds series."""
-    keys = set()
-    for r in results:
-        keys |= set(r["attacker_survivors"])
-        keys |= set(r["defender_survivors"])
-        keys |= set(r["defender_defense_survivors"])
-    surv = {k: [] for k in keys}
-    for r in results:
-        for k in keys:
-            s = (r["attacker_survivors"].get(k, 0)
-                 + r["defender_survivors"].get(k, 0)
-                 + r["defender_defense_survivors"].get(k, 0))
-            surv[k].append(float(s))
-    winners = [r["winner"] for r in results]
-    rounds = [float(r["rounds_fought"]) for r in results]
-    return surv, winners, rounds
+def test_pyrng_probes_match_cpython():
+    """The RNG port (src/pyrng.rs) must stream bit-identically to
+    random.Random - the foundation every exact assertion below rests on."""
+    for seed in (42, 0, 2 ** 32 + 7, 9876543210987654321, 123456789):
+        r = random.Random(seed)
+        assert og._pyrng_probe_random(seed, 8) == [r.random() for _ in range(8)]
+        g = random.Random(seed)
+        assert og._pyrng_probe_gauss(seed, 8) == [g.gauss(0.0, 1.0) for _ in range(8)]
 
 
 @pytest.mark.parametrize("name,atk,dfd,dfl,ta,td", CASES, ids=[c[0] for c in CASES])
-def test_rust_python_parity(name, atk, dfd, dfl, ta, td):
-    base = 1000 + CASES.index(next(c for c in CASES if c[0] == name)) * 977
-    py_results = [
-        simulate_combat_fast(atk, dfd, dfl, ta, td, seed=base + i)
-        for i in range(N_SIMS)
-    ]
-    rs_results = [
-        og.simulate_analytical_combat_py(atk, dfd, dfl, ta, td, base + i)
-        for i in range(N_SIMS)
-    ]
-    p_surv, p_win, p_rnd = _series(py_results)
-    r_surv, r_win, r_rnd = _series(rs_results)
-    n = N_SIMS
+def test_single_sim_exact(name, atk, dfd, dfl, ta, td):
+    """Every battle resolves identically in both engines for a given
+    seed: winner, rounds, and ALL survivor counts match exactly."""
+    for seed in range(5):
+        p = simulate_combat_fast(atk, dfd, dfl, ta, td, seed=seed)
+        r = og.simulate_analytical_combat_py(atk, dfd, dfl, ta, td, seed)
+        for k in SIM_KEYS:
+            assert p[k] == r[k], (
+                f"{name} seed={seed} {k}: py={p[k]} rust={r[k]}"
+            )
 
-    for w in ("Attacker", "Defender", "Draw"):
-        p_rate = sum(1 for x in p_win if x == w) / n
-        r_rate = sum(1 for x in r_win if x == w) / n
-        se = math.sqrt((p_rate * (1 - p_rate) + r_rate * (1 - r_rate)) / n)
-        tol = max(WIN_FLOOR, SIGMA * se)
-        assert abs(r_rate - p_rate) <= tol, (
-            f"{name}: {w} rate rust={r_rate:.3f} py={p_rate:.3f} tol={tol:.3f}"
-        )
 
-    p_rmean, p_rsd = _mean_std(p_rnd)
-    r_rmean, r_rsd = _mean_std(r_rnd)
-    tol = max(ROUNDS_FLOOR, SIGMA * math.sqrt((p_rsd ** 2 + r_rsd ** 2) / n))
-    assert abs(r_rmean - p_rmean) <= tol, (
-        f"{name}: mean rounds rust={r_rmean:.2f} py={p_rmean:.2f} tol={tol:.2f}"
-    )
+@pytest.mark.parametrize("want_attr", [False, True])
+@pytest.mark.parametrize("name", BATCH_CASES)
+def test_batch_exact(name, want_attr):
+    """Batch aggregates (losses, stddev, debris incl. the sum-then-divide
+    debris_total, win counts, survivor means, attribution_mean) must be
+    bit-identical to the pure-Python implementation."""
+    _, atk, dfd, dfl, ta, td = _case(name)
+    py = _simulate_batch_fast_python(atk, dfd, dfl, ta, td, 60, 4242,
+                                     0.30, True, want_attr)
+    rs = og.simulate_analytical_batch_py(atk, dfd, dfl, ta, td, 60, 4242,
+                                         0.30, True, want_attr)
+    assert py == rs
 
-    for k in sorted(set(p_surv) | set(r_surv)):
-        p_m, p_sd = _mean_std(p_surv.get(k, [0.0] * n))
-        r_m, r_sd = _mean_std(r_surv.get(k, [0.0] * n))
-        se = math.sqrt((p_sd ** 2 + r_sd ** 2) / n)
-        tol = max(SURV_ABS_FLOOR, SURV_REL_FLOOR * max(p_m, 1.0), SIGMA * se)
-        assert abs(r_m - p_m) <= tol, (
-            f"{name}: survivor mean {k} rust={r_m:.2f} py={p_m:.2f} "
-            f"tol={tol:.2f} (se={se:.2f})"
-        )
+
+def test_delegation_determinism():
+    """simulate_batch_fast delegates to the SAME Rust code: identical
+    args give a bit-identical, fully deterministic result (no hidden
+    HashMap iteration order)."""
+    _, atk, dfd, dfl, ta, td = _case("mini_user_scenario")
+    via_public = simulate_batch_fast(atk, dfd, dfl, ta, td, 40, 123,
+                                     0.30, True, True)
+    via_rust = og.simulate_analytical_batch_py(atk, dfd, dfl, ta, td, 40, 123,
+                                               0.30, True, True)
+    assert via_public == via_rust
+
+
+def test_recycler_fallback():
+    """Recycler has no Rust combat model: the delegation guard must route
+    recycler fleets to the pure-Python path (bit-identical to calling it
+    directly)."""
+    atk = {"light_fighter": 800, "recycler": 60}
+    dfd = {"cruiser": 150}
+    via_public = simulate_batch_fast(atk, dfd, {}, T, T, 30, 55,
+                                     0.30, False, False)
+    via_python = _simulate_batch_fast_python(atk, dfd, {}, T, T, 30, 55,
+                                             0.30, False, False)
+    assert via_public == via_python
+    assert via_public["sims_run"] == 30

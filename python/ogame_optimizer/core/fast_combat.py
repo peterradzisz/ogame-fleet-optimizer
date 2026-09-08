@@ -861,6 +861,64 @@ def simulate_batch_fast(
 ) -> dict:
     """Run N analytical sims and return aggregate stats (same format as Rust batch).
 
+    Delegates to the Rust analytical core (``_ogame_combat``) when built:
+    statistically identical math (verified by
+    ``python_tests/test_analytical_python_rust_parity.py``), ~35x faster
+    per sim, rayon-parallel across sims with the GIL released. Fleets
+    containing recycler (Python-only ship, no Rust combat model) and
+    stale wheels without the analytical batch fall back to the
+    pure-Python implementation below.
+    """
+    try:
+        from ogame_optimizer import _ogame_combat as _an
+    except ImportError:
+        _an = None
+    if (
+        _an is not None
+        and hasattr(_an, "simulate_analytical_batch_py")
+        and "recycler" not in attacker
+        and "recycler" not in defender
+    ):
+        return _an.simulate_analytical_batch_py(
+            attacker,
+            defender,
+            defender_defenses or {},
+            tuple(attacker_tech),
+            tuple(defender_tech),
+            int(n_sims),
+            int(base_seed),
+            float(debris_pct),
+            bool(deuterium_in_debris),
+            bool(want_attribution),
+        )
+    return _simulate_batch_fast_python(
+        attacker,
+        defender,
+        defender_defenses,
+        attacker_tech,
+        defender_tech,
+        n_sims,
+        base_seed,
+        debris_pct,
+        deuterium_in_debris,
+        want_attribution,
+    )
+
+
+def _simulate_batch_fast_python(
+    attacker: Dict[str, int],
+    defender: Dict[str, int],
+    defender_defenses: Optional[Dict[str, int]] = None,
+    attacker_tech: Tuple[int, int, int] = (0, 0, 0),
+    defender_tech: Tuple[int, int, int] = (0, 0, 0),
+    n_sims: int = 100,
+    base_seed: int = 42,
+    debris_pct: float = DEFAULT_DEBRIS_PCT,
+    deuterium_in_debris: bool = False,
+    want_attribution: bool = False,
+) -> dict:
+    """Run N analytical sims and return aggregate stats (same format as Rust batch).
+
     With ``want_attribution=True`` the result additionally carries
     ``"attribution_mean"``: ``{shooter_ship: {target_ship: mean_potential}}``
     - the per-sim raw damage-potential sums (see ``_fire``) averaged over

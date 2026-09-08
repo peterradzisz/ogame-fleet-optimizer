@@ -13,12 +13,11 @@ use std::collections::HashMap;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use crate::analytical_tables::tables;
+use crate::analytical_tables::{tables, CostMCD};
 use crate::rapidfire::UnitType;
 use crate::ships::DefenseType;
-use rand::{Rng, SeedableRng};
-use rand::rngs::StdRng;
-use rand_distr::StandardNormal;
+use crate::pyrng::{libm_erfc, libm_exp, PyRandom};
+use rayon::prelude::*;
 
 pub const HEAVY_SHOT_TAU: f64 = 0.25;
 pub const OVERLAY_BETA: f64 = 1.0;
@@ -60,19 +59,54 @@ impl UnitState {
     }
 }
 
-type Side = HashMap<UnitType, UnitState>;
+/// Insertion-ordered side state: Python dicts iterate in insertion
+/// order, so replicating that order makes RNG draw assignment and float
+/// summation bit-identical to the Python engine (given the exact PyRandom
+/// stream in pyrng.rs).
+struct OrdSide {
+    items: Vec<(UnitType, UnitState)>,
+}
+
+impl OrdSide {
+    fn new() -> Self {
+        OrdSide { items: Vec::new() }
+    }
+    fn insert(&mut self, k: UnitType, u: UnitState) {
+        // Fleet dicts have unique keys: plain push preserves order.
+        self.items.push((k, u));
+    }
+    fn get(&self, k: &UnitType) -> Option<&UnitState> {
+        self.items.iter().find(|(key, _)| key == k).map(|(_, u)| u)
+    }
+    fn get_mut(&mut self, k: &UnitType) -> Option<&mut UnitState> {
+        self.items.iter_mut().find(|(key, _)| key == k).map(|(_, u)| u)
+    }
+    fn iter<'a>(&'a self) -> impl Iterator<Item = (&'a UnitType, &'a UnitState)> + 'a {
+        self.items.iter().map(|(k, u)| (k, u))
+    }
+    fn values<'a>(&'a self) -> impl Iterator<Item = &'a UnitState> + 'a {
+        self.items.iter().map(|(_, u)| u)
+    }
+    fn values_mut<'a>(&'a mut self) -> impl Iterator<Item = &'a mut UnitState> + 'a {
+        self.items.iter_mut().map(|(_, u)| u)
+    }
+}
+
+/// Damage-potential attribution: (side, shooter, target) -> summed
+/// pre-mitigation potential. side b'A' = attacker volley, b'D' = defender.
+type Attribution = HashMap<(u8, UnitType, UnitType), f64>;
 
 fn make_side(
-    attacker: &HashMap<UnitType, u64>,
-    defenses: &HashMap<DefenseType, u64>,
+    attacker: &[(UnitType, u64)],
+    defenses: &[(DefenseType, u64)],
     tech: (u8, u8, u8),
-) -> Side {
+) -> OrdSide {
     let t = tables();
     let atk_mult = 1.0 + tech.0 as f64 * 0.1;
     let shield_mult = 1.0 + tech.1 as f64 * 0.1;
     let hull_mult = 1.0 + tech.2 as f64 * 0.1;
-    let mut side: Side = HashMap::new();
-    for (&k, &v) in attacker {
+    let mut side = OrdSide::new();
+    for &(k, v) in attacker {
         if v == 0 { continue; }
         let stats = match t.ship_stats.get(&k) { Some(s) => s, None => continue };
         let bs = stats.shield as f64 * shield_mult;
@@ -80,7 +114,7 @@ fn make_side(
         let a = stats.atk as f64 * atk_mult;
         side.insert(k, UnitState::new(v as f64, bs, uh, a));
     }
-    for (&d_key, &v) in defenses {
+    for &(d_key, v) in defenses {
         if v == 0 { continue; }
         let stats = match t.defense_stats.get(&d_key) { Some(s) => s, None => continue };
         let bs = stats.shield as f64 * shield_mult;
@@ -91,7 +125,7 @@ fn make_side(
     side
 }
 
-fn regen_shields(side: &mut Side) {
+fn regen_shields(side: &mut OrdSide) {
     for u in side.values_mut() {
         u.shields = u.base_shield * u.count;
         u.shield_rem = u.base_shield;
@@ -104,7 +138,7 @@ fn poisson_ge(lam: f64, m: i64) -> f64 {
     if m <= 0 { return 1.0; }
     if lam <= 0.0 { return 0.0; }
     if lam > 500.0 { return 1.0; }
-    let mut term = (-lam).exp();
+    let mut term = libm_exp(-lam);
     let mut cdf = term;
     for j in 1..m {
         term *= lam / j as f64;
@@ -118,11 +152,13 @@ fn poisson_ge(lam: f64, m: i64) -> f64 {
 /// a per-survivor Poisson stream with a calibrated damage-fraction
 /// histogram. Rapidfire: continuation prob = sum_f f*(N-1)/N.
 #[allow(clippy::too_many_arguments)]
-fn fire<R: Rng>(
-    attacker_side: &Side,
-    defender_side: &mut Side,
-    rng: &mut R,
+fn fire(
+    attacker_side: &OrdSide,
+    defender_side: &mut OrdSide,
+    rng: &mut PyRandom,
     noise_sigma: f64,
+    side: u8,
+    mut attribution: Option<&mut Attribution>,
 ) {
     let rf = &tables().rapidfire;
     let shooters: Vec<(&UnitType, &UnitState)> = attacker_side
@@ -135,7 +171,7 @@ fn fire<R: Rng>(
         let total_def_count: f64 = defender_side.values().map(|u| u.count).sum();
         if total_def_count <= 0.0 { return; }
 
-        let fractions: HashMap<UnitType, f64> = defender_side
+        let fractions: Vec<(UnitType, f64)> = defender_side
             .iter()
             .map(|(k, u)| {
                 (*k, if u.count > 0.0 { u.count / total_def_count } else { 0.0 })
@@ -155,9 +191,7 @@ fn fire<R: Rng>(
             sub_shots.insert(**k_atk, atk_u.count * mult / SUBSTEPS as f64);
         }
 
-        let def_keys: Vec<UnitType> = defender_side.keys().copied().collect();
-        for k_def in def_keys {
-            let frac = match fractions.get(&k_def) { Some(f) => *f, None => continue };
+        for (k_def, frac) in fractions.iter().copied() {
             let (count, unit_shield, unit_hull, c_rem, has_bins) = {
                 let d = match defender_side.get(&k_def) { Some(d) => d, None => continue };
                 (d.count, d.base_shield, d.unit_hull, d.shield_rem, !d.dmg_bins.is_empty())
@@ -173,6 +207,14 @@ fn fire<R: Rng>(
                 // OGame shield bounce: shot below 1% of max shield is wasted.
                 if per_shot < unit_shield * 0.01 { continue; }
                 if aimed < 0.5 { continue; }
+                if let Some(attr) = attribution.as_deref_mut() {
+                    let pot = if per_shot >= unit_eff_hp {
+                        aimed * unit_eff_hp
+                    } else {
+                        aimed * per_shot
+                    };
+                    *attr.entry((side, **k_atk, k_def)).or_insert(0.0) += pot;
+                }
                 if per_shot >= unit_eff_hp {
                     spike_kills += aimed;
                 } else {
@@ -212,8 +254,8 @@ fn fire<R: Rng>(
             }
             let s_eff = w_dmg / lam_tot;
             let mut lam = (lam_tot / survivors).min(MAX_POISSON_LAMBDA);
-            let g: f64 = rng.sample(StandardNormal);
-            let perturb = (1.0 + g * noise_sigma).max(0.25);
+            let g = rng.gauss(0.0, noise_sigma);
+            let perturb = (1.0 + g).max(0.25);
             lam *= perturb;
             let h = unit_hull;
             if h <= 0.0 { continue; }
@@ -265,11 +307,11 @@ fn fire<R: Rng>(
                     } else if a < -8.3 {
                         surv_tail = 0.0;
                     } else {
-                        surv_tail = (0.5 * erfc_approx(a / SQRT2)).clamp(0.0, 1.0);
+                        surv_tail = (0.5 * libm_erfc(a / SQRT2)).clamp(0.0, 1.0);
                     }
                     if (1e-9..(1.0 - 1e-9)).contains(&surv_tail) {
                         // survivors' conditional (upper-truncated Normal) moments
-                        let phi_a = (-0.5 * a * a).exp() / (2.0 * std::f64::consts::PI).sqrt();
+                        let phi_a = libm_exp(-0.5 * a * a) / (2.0 * std::f64::consts::PI).sqrt();
                         let hh = phi_a / (1.0 - surv_tail);
                         x_post = x_new - sig * hh;
                         v_post = v_new * (1.0 - a * hh - hh * hh).max(0.0);
@@ -277,7 +319,7 @@ fn fire<R: Rng>(
                 }
                 let n_s = lam * pm1 - (if m >= 1 { m - 1 } else { 0 }) as f64 * pm;
                 let x_eff = x_bar + HAZARD_MID * (x_new.min(1.0) - x_bar);
-                let haz = if n_s > 0.0 && x_eff > 0.3 { (-n_s * x_eff).exp() } else { 1.0 };
+                let haz = if n_s > 0.0 && x_eff > 0.3 { libm_exp(-n_s * x_eff) } else { 1.0 };
                 let surv_round = surv_tail * haz;
                 if surv_round <= 1e-9 {
                     if let Some(d) = defender_side.get_mut(&k_def) { zero_out(d); }
@@ -313,7 +355,7 @@ fn fire<R: Rng>(
 
             let mut new_pairs: Vec<(f64, f64)> = Vec::new();
             if lam_h_tot <= 0.0 {
-                let p_exp = (-lam).exp();
+                let p_exp = libm_exp(-lam);
                 for (x_prev, w_b) in &bins {
                     if *w_b <= 0.0 || *x_prev >= 1.0 { continue; }
                     let w_bn = w_b / wsum;
@@ -358,12 +400,12 @@ fn fire<R: Rng>(
                 let s_b = if lam_b > 0.0 {
                     (w_dmg - w_h) / (lam_tot - lam_h_tot)
                 } else { 0.0 };
-                let p_exp_b = (-lam_b).exp();
+                let p_exp_b = libm_exp(-lam_b);
                 let j_max = ((lam_h + 5.0 * lam_h.sqrt()) as i64 + 2).min(64);
                 for (x_prev, w_b) in &bins {
                     if *w_b <= 0.0 || *x_prev >= 1.0 { continue; }
                     let w_bn = w_b / wsum;
-                    let mut p_j = (-lam_h).exp();
+                    let mut p_j = libm_exp(-lam_h);
                     for j in 0..=j_max {
                         if p_j < 1e-14 && j as f64 > lam_h { break; }
                         let c_j = (c_rem - j as f64 * s_h).max(0.0);
@@ -456,17 +498,18 @@ fn fire<R: Rng>(
 /// attacker-first volleys, stalemate detection, stochastic rounding of
 /// survivors (floor(x + U)), OGame draw rule (both alive after 6 = Draw).
 fn simulate_combat_internal(
-    attacker: &HashMap<UnitType, u64>,
-    defender: &HashMap<UnitType, u64>,
-    defender_defenses: &HashMap<DefenseType, u64>,
+    attacker: &[(UnitType, u64)],
+    defender: &[(UnitType, u64)],
+    defender_defenses: &[(DefenseType, u64)],
     attacker_tech: (u8, u8, u8),
     defender_tech: (u8, u8, u8),
     seed: u64,
+    mut attribution: Option<&mut Attribution>,
 ) -> (String, u32, HashMap<UnitType, u64>, HashMap<UnitType, u64>, HashMap<DefenseType, u64>) {
-    let mut rng = StdRng::seed_from_u64(seed);
+    let mut rng = PyRandom::new(seed);
     let noise_sigma = 0.15 / (SUBSTEPS as f64).sqrt();
 
-    let mut atk_side = make_side(attacker, &HashMap::new(), attacker_tech);
+    let mut atk_side = make_side(attacker, &[], attacker_tech);
     let mut def_side = make_side(defender, defender_defenses, defender_tech);
 
     let mut rounds_fought = 0u32;
@@ -479,8 +522,8 @@ fn simulate_combat_internal(
         let atk_before: f64 = atk_side.values().map(|u| u.count).sum();
         let def_before: f64 = def_side.values().map(|u| u.count).sum();
 
-        fire(&atk_side, &mut def_side, &mut rng, noise_sigma);
-        fire(&def_side, &mut atk_side, &mut rng, noise_sigma);
+        fire(&atk_side, &mut def_side, &mut rng, noise_sigma, b'A', attribution.as_deref_mut());
+        fire(&def_side, &mut atk_side, &mut rng, noise_sigma, b'D', attribution.as_deref_mut());
 
         let atk_after: f64 = atk_side.values().map(|u| u.count).sum();
         let def_after: f64 = def_side.values().map(|u| u.count).sum();
@@ -494,17 +537,17 @@ fn simulate_combat_internal(
 
     // floor(x + U): unbiased single stochastic rounding (see Python note:
     // hard floor quantises fractional deaths to FULL units every sim).
-    let sround = |x: f64, rng: &mut StdRng| (x + rng.gen::<f64>()) as u64;
+    let sround = |x: f64, rng: &mut PyRandom| (x + rng.random()) as u64;
 
     let mut atk_surv: HashMap<UnitType, u64> = HashMap::new();
-    for (k, u) in &atk_side {
+    for (k, u) in atk_side.iter() {
         if u.count > 0.5 {
             atk_surv.insert(*k, sround(u.count, &mut rng));
         }
     }
     let mut def_ship_surv: HashMap<UnitType, u64> = HashMap::new();
     let mut def_def_surv: HashMap<DefenseType, u64> = HashMap::new();
-    for (k, u) in &def_side {
+    for (k, u) in def_side.iter() {
         if u.count > 0.5 {
             match k {
                 UnitType::Ship(_) => { def_ship_surv.insert(*k, sround(u.count, &mut rng)); }
@@ -527,22 +570,6 @@ fn simulate_combat_internal(
     };
 
     (winner.to_string(), rounds_fought, atk_surv, def_ship_surv, def_def_surv)
-}
-
-/// Abramowitz & Stegun 7.1.26 erfc approximation (|eps| <= 1.5e-7), the
-/// accuracy budget for surv_tail is far coarser (statistical parity).
-fn erfc_approx(x: f64) -> f64 {
-    let p = 0.3275911_f64;
-    let a1 = 0.254829592_f64;
-    let a2 = -0.284496736_f64;
-    let a3 = 1.421413741_f64;
-    let a4 = -1.453152027_f64;
-    let a5 = 1.061405429_f64;
-    let ax = x.abs();
-    let t = 1.0 / (1.0 + p * ax);
-    let poly = ((((a5 * t + a4) * t + a3) * t + a2) * t + a1) * t;
-    let y = poly * (-ax * ax).exp();
-    if x < 0.0 { 2.0 - y } else { y }
 }
 
 /// Python fleet dicts use snake_case keys (recycler has no Rust combat
@@ -619,28 +646,36 @@ fn defense_to_snake(d: crate::ships::DefenseType) -> &'static str {
     }
 }
 
-fn fleet_from_py(d: &Bound<'_, PyDict>) -> PyResult<HashMap<UnitType, u64>> {
-    let mut m = HashMap::new();
-    for (k, v) in d.iter() {
+/// Ordered (PyDict insertion order) fleet pairs; counts <= 0 skipped,
+/// matching Python's _make_side filter.
+fn fleet_from_py(d: &Bound<'_, PyDict>) -> PyResult<Vec<(UnitType, u64)>> {
+    let mut out = Vec::new();
+    for (k, val) in d.iter() {
         let name: String = k.extract()?;
-        let count: u64 = v.extract()?;
+        let count: i64 = val.extract()?;
+        if count <= 0 {
+            continue;
+        }
         if let Some(s) = snake_to_ship(&name) {
-            m.insert(UnitType::Ship(s), count);
+            out.push((UnitType::Ship(s), count as u64));
         }
     }
-    Ok(m)
+    Ok(out)
 }
 
-fn defenses_from_py(d: &Bound<'_, PyDict>) -> PyResult<HashMap<DefenseType, u64>> {
-    let mut m = HashMap::new();
-    for (k, v) in d.iter() {
+fn defenses_from_py(d: &Bound<'_, PyDict>) -> PyResult<Vec<(DefenseType, u64)>> {
+    let mut out = Vec::new();
+    for (k, val) in d.iter() {
         let name: String = k.extract()?;
-        let count: u64 = v.extract()?;
+        let count: i64 = val.extract()?;
+        if count <= 0 {
+            continue;
+        }
         if let Some(dt) = snake_to_defense(&name) {
-            m.insert(dt, count);
+            out.push((dt, count as u64));
         }
     }
-    Ok(m)
+    Ok(out)
 }
 
 fn ships_to_py<'py>(py: Python<'py>, m: &HashMap<UnitType, u64>) -> PyResult<Bound<'py, PyDict>> {
@@ -671,29 +706,6 @@ pub fn verify_tables_on_startup() {
     assert!(!t.ship_costs.is_empty(), "analytical tables: no ship_costs");
 }
 
-/// Phase 3 fills this in with a rayon-parallel batch. Placeholder result
-/// shape mirrors Python simulate_batch_fast so callers can be wired early.
-pub fn build_not_implemented_result(n_sims: u32) -> HashMap<String, PyObject> {
-    let mut result: HashMap<String, PyObject> = HashMap::new();
-    Python::with_gil(|py| {
-        result.insert("winner".into(), "NotImplemented".into_py(py));
-        result.insert("rounds_fought".into(), 0u32.into_py(py));
-        result.insert("attacker_survivors".into(), PyDict::new_bound(py).into());
-        result.insert("defender_survivors".into(), PyDict::new_bound(py).into());
-        result.insert("defender_defense_survivors".into(), PyDict::new_bound(py).into());
-        result.insert("debris_metal".into(), 0u64.into_py(py));
-        result.insert("debris_crystal".into(), 0u64.into_py(py));
-        result.insert("debris_deuterium".into(), 0u64.into_py(py));
-        result.insert("debris_total".into(), 0u64.into_py(py));
-        result.insert("mean_attacker_loss".into(), 0.0f64.into_py(py));
-        result.insert("stddev_attacker_loss".into(), 0.0f64.into_py(py));
-        result.insert("mean_defender_loss".into(), 0.0f64.into_py(py));
-        result.insert("win_probability".into(), 0.0f64.into_py(py));
-        result.insert("sims_run".into(), n_sims.into_py(py));
-    });
-    result
-}
-
 /// Single analytical combat sim. Same return shape as Python
 /// simulate_combat_fast (debris fields zero; the batch computes debris).
 #[pyfunction]
@@ -711,7 +723,7 @@ pub fn simulate_analytical_combat_py<'py>(
     let dfl = defenses_from_py(defender_defenses)?;
 
     let (winner, rounds, atk_surv, def_ships, def_defs) = py.allow_threads(|| {
-        simulate_combat_internal(&atk, &def, &dfl, attacker_tech, defender_tech, seed)
+        simulate_combat_internal(&atk, &def, &dfl, attacker_tech, defender_tech, seed, None)
     });
 
     let dict = PyDict::new_bound(py);
@@ -725,8 +737,269 @@ pub fn simulate_analytical_combat_py<'py>(
     Ok(dict)
 }
 
-/// Batch of analytical sims with aggregate stats. PHASE 3: rayon-parallel
-/// n_sims + GIL release. Placeholder until then.
+// ======================= batch (Phase 3) ==================================
+
+/// Per-sim outputs reduced into the batch aggregate.
+struct SimOut {
+    winner: u8, // 0 Attacker / 1 Defender / 2 Draw
+    loss: f64,
+    def_loss: f64,
+    db: (i64, i64, i64),
+    atk_surv: HashMap<UnitType, u64>,
+    def_surv: HashMap<UnitType, u64>,
+    def_def_surv: HashMap<DefenseType, u64>,
+    attr: Option<Attribution>,
+}
+
+fn fleet_value(fleet: &[(UnitType, u64)], costs: &HashMap<UnitType, CostMCD>) -> f64 {
+    fleet
+        .iter()
+        .map(|(k, v)| {
+            let mcd = costs
+                .get(k)
+                .map(|c| c.metal as f64 + c.crystal as f64 + c.deuterium as f64)
+                .unwrap_or(0.0);
+            mcd * *v as f64
+        })
+        .sum()
+}
+
+/// Survivor maps: values are exact integers in f64, so iteration order
+/// cannot change the sum.
+fn fleet_value_map(m: &HashMap<UnitType, u64>, costs: &HashMap<UnitType, CostMCD>) -> f64 {
+    m.iter()
+        .map(|(k, v)| {
+            let mcd = costs
+                .get(k)
+                .map(|c| c.metal as f64 + c.crystal as f64 + c.deuterium as f64)
+                .unwrap_or(0.0);
+            mcd * *v as f64
+        })
+        .sum()
+}
+
+/// Debris from destroyed ships AND defenses (port of calculate_debris:
+/// int(total_lost * debris_pct), deuterium only when flagged).
+#[allow(clippy::too_many_arguments)]
+fn debris_of(
+    atk_init: &[(UnitType, u64)],
+    atk_surv: &HashMap<UnitType, u64>,
+    def_init: &[(UnitType, u64)],
+    def_surv: &HashMap<UnitType, u64>,
+    def_def_init: &[(DefenseType, u64)],
+    def_def_surv: &HashMap<DefenseType, u64>,
+    debris_pct: f64,
+    deuterium_in_debris: bool,
+) -> (i64, i64, i64) {
+    let t = tables();
+    let (mut lm, mut lc, mut ld): (i64, i64, i64) = (0, 0, 0);
+    let mut add = |costs: Option<&CostMCD>, destroyed: i64| {
+        if let Some(c) = costs {
+            lm += c.metal as i64 * destroyed;
+            lc += c.crystal as i64 * destroyed;
+            ld += c.deuterium as i64 * destroyed;
+        }
+    };
+    for (k, init) in atk_init {
+        let destroyed = (*init as i64 - atk_surv.get(k).copied().unwrap_or(0) as i64).max(0);
+        add(t.ship_costs.get(k), destroyed);
+    }
+    for (k, init) in def_init {
+        let destroyed = (*init as i64 - def_surv.get(k).copied().unwrap_or(0) as i64).max(0);
+        add(t.ship_costs.get(k), destroyed);
+    }
+    for (k, init) in def_def_init {
+        let destroyed = (*init as i64 - def_def_surv.get(k).copied().unwrap_or(0) as i64).max(0);
+        add(t.defense_costs.get(k), destroyed);
+    }
+    let dm = (lm as f64 * debris_pct) as i64;
+    let dc = (lc as f64 * debris_pct) as i64;
+    let dd = if deuterium_in_debris { (ld as f64 * debris_pct) as i64 } else { 0 };
+    (dm, dc, dd)
+}
+
+/// Batch aggregate (shape mirrors Python simulate_batch_fast exactly).
+struct BatchOut {
+    mean_loss: f64,
+    stddev_loss: f64,
+    mean_def_loss: f64,
+    win_probability: f64,
+    wins: u32,
+    losses: u32,
+    draws: u32,
+    db_m: i64,
+    db_c: i64,
+    db_d: i64,
+    db_total: i64,
+    atk_surv_mean: HashMap<UnitType, f64>,
+    def_surv_mean: HashMap<UnitType, f64>,
+    def_def_mean: HashMap<DefenseType, f64>,
+    attr_mean: Option<HashMap<UnitType, HashMap<UnitType, f64>>>,
+}
+
+/// n_sims independent sims across the rayon pool (per-sim seeds are
+/// base_seed + i, matching Python). No shared state: each sim builds its
+/// own sides and StdRng.
+#[allow(clippy::too_many_arguments)]
+fn run_batch(
+    atk: &[(UnitType, u64)],
+    def: &[(UnitType, u64)],
+    dfl: &[(DefenseType, u64)],
+    attacker_tech: (u8, u8, u8),
+    defender_tech: (u8, u8, u8),
+    n_sims: u32,
+    base_seed: u64,
+    debris_pct: f64,
+    deuterium_in_debris: bool,
+    want_attribution: bool,
+) -> BatchOut {
+    let t = tables();
+    let atk_value = fleet_value(atk, &t.ship_costs);
+    let def_value = fleet_value(def, &t.ship_costs);
+
+    let sims: Vec<SimOut> = (0..n_sims)
+        .into_par_iter()
+        .map(|i| {
+            let mut attr: Option<Attribution> =
+                if want_attribution { Some(HashMap::new()) } else { None };
+            let seed = base_seed.wrapping_add(i as u64);
+            let (winner, _rounds, atk_surv, def_surv, def_def_surv) =
+                simulate_combat_internal(
+                    atk, def, dfl, attacker_tech, defender_tech, seed, attr.as_mut(),
+                );
+            let loss = atk_value - fleet_value_map(&atk_surv, &t.ship_costs);
+            let def_loss = def_value - fleet_value_map(&def_surv, &t.ship_costs);
+            let db = debris_of(
+                atk, &atk_surv, def, &def_surv, dfl, &def_def_surv,
+                debris_pct, deuterium_in_debris,
+            );
+            SimOut {
+                winner: match winner.as_str() {
+                    "Attacker" => 0,
+                    "Defender" => 1,
+                    _ => 2,
+                },
+                loss,
+                def_loss,
+                db,
+                atk_surv,
+                def_surv,
+                def_def_surv,
+                attr,
+            }
+        })
+        .collect();
+
+    let n = sims.len().max(1) as f64;
+    let mean_loss = sims.iter().map(|s| s.loss).sum::<f64>() / n;
+    let variance = sims.iter().map(|s| (s.loss - mean_loss).powi(2)).sum::<f64>() / n;
+    let mean_def_loss = sims.iter().map(|s| s.def_loss).sum::<f64>() / n;
+    let wins = sims.iter().filter(|s| s.winner == 0).count() as u32;
+    let losses = sims.iter().filter(|s| s.winner == 1).count() as u32;
+    let draws = sims.iter().filter(|s| s.winner == 2).count() as u32;
+    let db_m_sum = sims.iter().map(|s| s.db.0).sum::<i64>();
+    let db_c_sum = sims.iter().map(|s| s.db.1).sum::<i64>();
+    let db_d_sum = sims.iter().map(|s| s.db.2).sum::<i64>();
+    let db_m = (db_m_sum as f64 / n) as i64;
+    let db_c = (db_c_sum as f64 / n) as i64;
+    let db_d = (db_d_sum as f64 / n) as i64;
+    // Python: int((m_sum + c_sum + d_sum) / n) - sum FIRST, then divide.
+    // Summing the truncated per-component means loses the fractions and
+    // drifts by 1-2 vs CPython (observed off-by-one on defense stacks).
+    let db_total = ((db_m_sum + db_c_sum + db_d_sum) as f64 / n) as i64;
+
+    let mut atk_surv_mean: HashMap<UnitType, f64> = HashMap::new();
+    let mut def_surv_mean: HashMap<UnitType, f64> = HashMap::new();
+    let mut def_def_mean: HashMap<DefenseType, f64> = HashMap::new();
+    for s in &sims {
+        for (k, v) in &s.atk_surv {
+            *atk_surv_mean.entry(*k).or_insert(0.0) += *v as f64;
+        }
+        for (k, v) in &s.def_surv {
+            *def_surv_mean.entry(*k).or_insert(0.0) += *v as f64;
+        }
+        for (k, v) in &s.def_def_surv {
+            *def_def_mean.entry(*k).or_insert(0.0) += *v as f64;
+        }
+    }
+    for v in atk_surv_mean.values_mut() { *v /= n; }
+    for v in def_surv_mean.values_mut() { *v /= n; }
+    for v in def_def_mean.values_mut() { *v /= n; }
+
+    let attr_mean = if want_attribution {
+        let mut merged: HashMap<UnitType, HashMap<UnitType, f64>> = HashMap::new();
+        for s in &sims {
+            if let Some(attr) = &s.attr {
+                for ((_side, shooter, target), v) in attr {
+                    if *_side != b'A' { continue; }
+                    *merged.entry(*shooter).or_default().entry(*target).or_insert(0.0) += *v;
+                }
+            }
+        }
+        for targets in merged.values_mut() {
+            for v in targets.values_mut() { *v /= n; }
+        }
+        Some(merged)
+    } else {
+        None
+    };
+
+    BatchOut {
+        mean_loss,
+        stddev_loss: variance.sqrt(),
+        mean_def_loss,
+        win_probability: wins as f64 / n,
+        wins,
+        losses,
+        draws,
+        db_m,
+        db_c,
+        db_d,
+        db_total,
+        atk_surv_mean,
+        def_surv_mean,
+        def_def_mean,
+        attr_mean,
+    }
+}
+
+fn unit_to_snake(k: &UnitType) -> String {
+    match k {
+        UnitType::Ship(s) => ship_to_snake(*s).to_string(),
+        UnitType::Defense(d) => defense_to_snake(*d).to_string(),
+    }
+}
+
+fn f64_ships_to_py<'py>(
+    py: Python<'py>,
+    m: &HashMap<UnitType, f64>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new_bound(py);
+    for (k, v) in m {
+        if let UnitType::Ship(s) = k {
+            d.set_item(ship_to_snake(*s), *v)?;
+        }
+    }
+    Ok(d)
+}
+
+fn f64_defs_to_py<'py>(
+    py: Python<'py>,
+    m: &HashMap<DefenseType, f64>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new_bound(py);
+    for (k, v) in m {
+        d.set_item(defense_to_snake(*k), *v)?;
+    }
+    Ok(d)
+}
+
+/// Batch of analytical sims with aggregate stats. Port of Python
+/// simulate_batch_fast: same output shape, same per-sim seed scheme
+/// (base_seed + i), debris averaged per sim, attribution_mean
+/// (attacker-side entries only) when requested. Sims run under rayon
+/// with the GIL released, so Python ThreadPoolExecutor callers get true
+/// parallelism.
 #[pyfunction]
 pub fn simulate_analytical_batch_py<'py>(
     py: Python<'py>,
@@ -737,14 +1010,49 @@ pub fn simulate_analytical_batch_py<'py>(
     defender_tech: (u8, u8, u8),
     n_sims: u32,
     base_seed: u64,
+    debris_pct: f64,
+    deuterium_in_debris: bool,
+    want_attribution: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let _ = (attacker, defender, defender_defenses);
-    let _ = (attacker_tech, defender_tech, base_seed);
     verify_tables_on_startup();
-    let placeholder = build_not_implemented_result(n_sims);
+    let atk = fleet_from_py(attacker)?;
+    let def = fleet_from_py(defender)?;
+    let dfl = defenses_from_py(defender_defenses)?;
+
+    let out = py.allow_threads(|| {
+        run_batch(
+            &atk, &def, &dfl, attacker_tech, defender_tech,
+            n_sims, base_seed, debris_pct, deuterium_in_debris, want_attribution,
+        )
+    });
+
     let dict = PyDict::new_bound(py);
-    for (k, v) in placeholder {
-        dict.set_item(k, v)?;
+    dict.set_item("mean_attacker_loss", out.mean_loss)?;
+    dict.set_item("stddev_attacker_loss", out.stddev_loss)?;
+    dict.set_item("mean_defender_loss", out.mean_def_loss)?;
+    dict.set_item("win_probability", out.win_probability)?;
+    dict.set_item("wins", out.wins)?;
+    dict.set_item("losses", out.losses)?;
+    dict.set_item("draws", out.draws)?;
+    dict.set_item("sims_run", n_sims)?;
+    dict.set_item("seed_used", base_seed)?;
+    dict.set_item("debris_metal", out.db_m)?;
+    dict.set_item("debris_crystal", out.db_c)?;
+    dict.set_item("debris_deuterium", out.db_d)?;
+    dict.set_item("debris_total", out.db_total)?;
+    dict.set_item("attacker_survivors_mean", f64_ships_to_py(py, &out.atk_surv_mean)?)?;
+    dict.set_item("defender_survivors_mean", f64_ships_to_py(py, &out.def_surv_mean)?)?;
+    dict.set_item("defender_defense_survivors_mean", f64_defs_to_py(py, &out.def_def_mean)?)?;
+    if let Some(attr) = &out.attr_mean {
+        let d = PyDict::new_bound(py);
+        for (shooter, targets) in attr {
+            let td = PyDict::new_bound(py);
+            for (target, v) in targets {
+                td.set_item(unit_to_snake(target), *v)?;
+            }
+            d.set_item(unit_to_snake(shooter), td)?;
+        }
+        dict.set_item("attribution_mean", d)?;
     }
     Ok(dict)
 }
