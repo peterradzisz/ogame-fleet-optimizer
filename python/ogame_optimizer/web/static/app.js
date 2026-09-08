@@ -448,6 +448,53 @@
       }
     }
 
+    // ---- Added ships to mix (base-fleet mode: what to build on top) ----
+    var addHeading = document.getElementById("additions-heading");
+    var addCaption = document.getElementById("additions-caption");
+    var addTable = document.getElementById("additions-table");
+    var addTbody = document.querySelector("#additions-table tbody");
+    var addData = data.recommended_additions || {};
+    var addKeys = Object.keys(addData).filter(function(k) { return addData[k] > 0; });
+    if (addTbody) addTbody.innerHTML = "";
+    if (addKeys.length === 0) {
+      if (addHeading) addHeading.classList.add("hidden");
+      if (addCaption) addCaption.classList.add("hidden");
+      if (addTable) addTable.classList.add("hidden");
+    } else {
+      if (addHeading) addHeading.classList.remove("hidden");
+      if (addCaption) addCaption.classList.remove("hidden");
+      if (addTable) addTable.classList.remove("hidden");
+      addKeys.sort(function(a, b) {
+        return (shipCost(b) * addData[b]) - (shipCost(a) * addData[a]);
+      });
+      var addTotalCost = 0;
+      var addCostMap = {};
+      for (var ai = 0; ai < addKeys.length; ai++) {
+        var ac = shipCost(addKeys[ai]) * addData[addKeys[ai]];
+        addCostMap[addKeys[ai]] = ac;
+        addTotalCost += ac;
+      }
+      var fmtRes = function(v) {
+        if (v >= 1e6) return (v / 1e6).toFixed(1) + "M";
+        if (v >= 1e3) return (v / 1e3).toFixed(0) + "k";
+        return String(v);
+      };
+      for (var aj = 0; aj < addKeys.length; aj++) {
+        var ak = addKeys[aj];
+        var ameta = SHIP_META[ak] || { mcd: [0, 0, 0] };
+        var uc = ameta.mcd;
+        var an = addData[ak];
+        var pctS = addTotalCost > 0 ? (addCostMap[ak] / addTotalCost * 100).toFixed(1) + "%" : "-";
+        var addRow = document.createElement("tr");
+        addRow.innerHTML = "<td>" + ak.replace(/_/g, " ") + "</td>"
+          + '<td class="value-col">' + fmtNum(an) + "</td>"
+          + '<td class="value-col">' + fmtRes(uc[0]) + "/" + fmtRes(uc[1]) + "/" + fmtRes(uc[2]) + "</td>"
+          + '<td class="value-col">' + fmtRes(uc[0] * an) + "/" + fmtRes(uc[1] * an) + "/" + fmtRes(uc[2] * an) + "</td>"
+          + '<td class="value-col">' + pctS + "</td>";
+        if (addTbody) addTbody.appendChild(addRow);
+      }
+    }
+
     // ---- Defender fleet table (right column) ----
     var defTbody = document.querySelector("#defender-fleet-table tbody");
     var defSummary = document.getElementById("defender-fleet-summary");

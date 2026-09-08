@@ -282,25 +282,24 @@ Large Shield Dome / 1"></textarea>
           Budget ceiling stays raw — all recommendations remain buildable.
           Default 1:1:1 @ β=0.05 weighs every resource equally; raise a weight only if you're overflowing with that resource.
         </p>
-      </fieldset>
-
-      <div class="alpha-slider-row" style="margin-top: 1.2rem; padding-top: 0.8rem; border-top: 1px solid rgba(255,255,255,0.1);">
-        <label class="alpha-slider-label" for="fuel_speed_penalty_pct">
-          Fuel / speed penalty (slow & deut-expensive ships):
-          <span id="fuel_speed_penalty_pct_value" class="alpha-slider-value">0 (off)</span>
-        </label>
-        <input type="range" id="fuel_speed_penalty_pct" min="0" max="10" step="0.5" value="0">
-        <div class="alpha-slider-ticks">
-          <span>0 (off)</span>
-          <span>5 (moderate)</span>
-          <span>10 (strong)</span>
+        <div class="alpha-slider-row">
+          <label class="alpha-slider-label" for="fuel_speed_penalty_pct">
+            Fuel / speed penalty (slow &amp; deut-expensive ships):
+            <span id="fuel_speed_penalty_pct_value" class="alpha-slider-value">0 (off)</span>
+          </label>
+          <input type="range" id="fuel_speed_penalty_pct" min="0" max="10" step="0.5" value="0">
+          <div class="alpha-slider-ticks">
+            <span>0 (off)</span>
+            <span>5 (moderate)</span>
+            <span>10 (strong)</span>
+          </div>
+          <p class="resource-weights-hint">
+            Bias the optimizer away from slow / deuterium-expensive ships (Destroyer,
+            Reaper, Bomber, Deathstar) toward cheap+fast ones (LF, HF, Cruiser,
+            BC). Reference ship is Battlecruiser. 0 disables entirely.
+          </p>
         </div>
-        <p class="resource-weights-hint">
-          Bias the optimizer away from slow / deuterium-expensive ships (Destroyer,
-          Reaper, Bomber, Deathstar) toward cheap+fast ones (LF, HF, Cruiser,
-          BC). Reference ship is Battlecruiser. 0 disables entirely.
-        </p>
-      </div>
+      </fieldset>
     </div>
   </fieldset>
 
@@ -350,6 +349,12 @@ Large Shield Dome / 1"></textarea>
         <thead><tr><th>Ship</th><th>Est. Kills</th><th>Cost / Kill</th><th>Dmg Share</th></tr></thead>
         <tbody></tbody>
       </table>
+      <h3 id="additions-heading" class="hidden" style="margin-top:1rem">Added Ships to Mix</h3>
+      <p class="table-caption defender-summary" id="additions-caption">what to build on top of your base fleet (costs included)</p>
+      <table id="additions-table" class="hidden">
+        <thead><tr><th>Ship</th><th>Added</th><th>Unit M/C/D</th><th>Total M/C/D</th><th>Cost %</th></tr></thead>
+        <tbody></tbody>
+      </table>
     </div>
     <div class="fleet-table-col">
       <h3>Defender Fleet (Enemy) <span class="copy-btns"><button type="button" class="copy-btn" onclick="copyDefenderTable('text')">📋 Text</button><button type="button" class="copy-btn" onclick="copyDefenderTable('html')">📋 HTML</button><button type="button" class="copy-btn" onclick="copyDefenderOGame()">📋 OGame</button></span></h3>
@@ -371,5 +376,5 @@ Large Shield Dome / 1"></textarea>
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/app.js?v=20260830a"></script>
+<script src="/static/app.js?v=20260908a"></script>
 {% endblock %}

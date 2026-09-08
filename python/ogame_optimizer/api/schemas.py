@@ -90,6 +90,11 @@ class OptimizeRequest(BaseModel):
     # Battlecruiser (factor 1.00). See fleet_penalty_multiplier for the
     # table. 5 = moderate bias, 10 = strong bias.
     fuel_speed_penalty_pct: float = 0.0
+    # When True (default), sensitivity-analysis sims may run at a validated
+    # 1/10 or 1/100 scale-down for speed on big scenarios. Final validation
+    # and all GA rounds always run at full scale. False forces full scale
+    # everywhere.
+    validate_scale: bool = True
 
     @field_validator("budget_multiplier")
     @classmethod

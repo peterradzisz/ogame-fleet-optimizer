@@ -171,6 +171,7 @@ def run_optimize(req: OptimizeRequest) -> OptimizeResponse:
             base_fleet=req.base_fleet,
             include_alternatives=req.include_alternatives,
             fuel_speed_penalty_pct=req.fuel_speed_penalty_pct,
+            validate_scale=req.validate_scale,
         )
         _log.info("Optimize result: fleet=%s win_prob=%.3f loss_mean=%.0f time=%.2fs",
                   result.recommended_fleet, result.win_probability, result.expected_loss_mean, result.total_time)

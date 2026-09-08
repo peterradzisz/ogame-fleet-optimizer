@@ -52,3 +52,59 @@ def test_result_is_serializable():
     assert "recommended_fleet" in d
     assert "win_probability" in d
     assert "confidence_interval_95" in d
+
+
+# ---------------------------------------------------------------------------
+# Regression: impact_pct must compare effective-vs-effective (Session 5 fix).
+# Before the fix, variants were effective (raw * loss_scale) but the base was
+# raw, so EVERY ship read as a constant (loss_scale - 1) * 100 = -80%% in
+# profit mode (loss_scale=0.2) regardless of composition.
+# ---------------------------------------------------------------------------
+
+
+def test_sensitivity_impact_not_constant_in_profit_mode():
+    from ogame_optimizer.optimizer.orchestration import _sensitivity_analysis
+    from ogame_optimizer.core.combat import simulate_batch
+
+    enemy = {"light_fighter": 2000, "cruiser": 300, "battleship": 50}
+    fleet = {"cruiser": 400, "battleship": 60, "light_fighter": 1500}
+    tech_a, tech_d = (22, 21, 21), (19, 18, 18)
+
+    batch = simulate_batch(fleet, enemy, {}, tech_a, tech_d, n_sims=40,
+                           base_seed=7, debris_pct=0.8, deuterium_in_debris=True)
+    sens = _sensitivity_analysis(
+        fleet=fleet, enemy_fleet=enemy, enemy_defenses={},
+        attacker_tech=tech_a, enemy_tech=tech_d,
+        base_loss=float(batch["mean_attacker_loss"]),
+        debris_pct=0.8, deuterium_in_debris=True,
+        base_seed=7, n_sims=40, loss_scale=0.20,
+    )
+    vals = [info["impact_pct"] for info in sens.values()]
+    assert len(vals) >= 3
+    assert not all(abs(v + 80.0) < 1.0 for v in vals), (
+        "impact_pct collapsed to the constant -80%% artifact again "
+        f"(values: {vals})"
+    )
+    # Different ship types must genuinely differ in this scenario.
+    assert max(vals) - min(vals) > 10.0
+
+
+def test_sensitivity_sim_divisor_scales_down():
+    """sim_divisor=10 runs the same analysis on 1/10 fleets without error
+    and still returns per-ship entries for every analyzed type."""
+    from ogame_optimizer.optimizer.orchestration import _sensitivity_analysis
+
+    enemy = {"light_fighter": 20000, "cruiser": 3000, "battleship": 500}
+    fleet = {"cruiser": 4000, "battleship": 600, "light_fighter": 15000}
+
+    sens = _sensitivity_analysis(
+        fleet=fleet, enemy_fleet=enemy, enemy_defenses={},
+        attacker_tech=(22, 21, 21), enemy_tech=(19, 18, 18),
+        base_loss=1_000_000.0,
+        debris_pct=0.8, deuterium_in_debris=True,
+        base_seed=7, n_sims=20, loss_scale=1.0,
+        sim_divisor=10,
+    )
+    assert set(sens.keys()) == {"cruiser", "battleship", "light_fighter"}
+    for info in sens.values():
+        assert "impact_pct" in info and "tag" in info

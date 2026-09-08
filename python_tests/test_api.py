@@ -270,3 +270,11 @@ def test_optimize_request_fuel_speed_penalty_rejects_out_of_range():
             assert False, f"Should have rejected {bad}"
         except ValidationError:
             pass
+
+
+def test_optimize_request_validate_scale_default_true():
+    from ogame_optimizer.api.schemas import OptimizeRequest
+    req = OptimizeRequest(enemy_fleet={"light_fighter": 100})
+    assert req.validate_scale is True
+    req2 = OptimizeRequest(enemy_fleet={"light_fighter": 100}, validate_scale=False)
+    assert req2.validate_scale is False

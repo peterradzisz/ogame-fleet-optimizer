@@ -321,6 +321,7 @@ def _sensitivity_analysis(
     resource_weights: tuple = (1.0, 1.0, 1.0),
     preference_beta: float = 0.0,
     max_total_seconds: Optional[float] = None,
+    sim_divisor: int = 1,
 ) -> Dict[str, Dict]:
     """For each ship in fleet, measure impact of removing it (redistribute to best remaining).
 
@@ -348,6 +349,55 @@ def _sensitivity_analysis(
         present_ships.append(s)
     if len(present_ships) <= 1:
         return {}
+
+    # --- Optional validated scale-down of the comparison sims ---------------
+    # When sim_divisor > 1 (caller-validated scale-invariance), every
+    # sensitivity sim runs on fleet/divisor vs enemy/divisor and the
+    # baseline loss is RE-MEASURED at the same scale so the impact
+    # comparison stays apples-to-apples. Falls back to a smaller divisor
+    # when scaling would erase analyzed ship types or the enemy.
+    def _scale_down(f, d):
+        if d <= 1 or not f:
+            return f
+        return {s: c // d for s, c in f.items() if c // d > 0}
+
+    _eff_div = 1
+    if sim_divisor > 1:
+        for _d in (sim_divisor, 10, 1):
+            if _d <= 1:
+                _eff_div = 1
+                break
+            _sf = _scale_down(fleet, _d)
+            _se = _scale_down(enemy_fleet, _d)
+            _min_keep = min((_sf.get(s, 0) for s in present_ships), default=0)
+            if len(_sf) >= 2 and _min_keep >= 3 and sum(_se.values()) >= 30:
+                _eff_div = _d
+                break
+    if _eff_div > 1:
+        fleet = _scale_down(fleet, _eff_div)
+        enemy_fleet = _scale_down(enemy_fleet, _eff_div)
+        if enemy_defenses:
+            enemy_defenses = _scale_down(enemy_defenses, _eff_div)
+        if base_fleet:
+            base_fleet = _scale_down(base_fleet, _eff_div)
+        try:
+            _scaled_base = simulate_batch(
+                attacker=fleet,
+                defender=enemy_fleet,
+                defender_defenses=enemy_defenses,
+                attacker_tech=attacker_tech,
+                defender_tech=enemy_tech,
+                n_sims=min(n_sims, 60),
+                base_seed=base_seed + 71000,
+                debris_pct=debris_pct,
+                deuterium_in_debris=deuterium_in_debris,
+            )
+            _scaled_base_loss = float(_scaled_base.get("mean_attacker_loss", -1))
+            if _scaled_base_loss >= 0:
+                base_loss = _scaled_base_loss
+            _log.info("Sensitivity: running at 1/%d scale (validated); base loss re-measured", _eff_div)
+        except Exception:
+            pass
 
     # Ships that serve as cannon fodder - negative impact is expected, not a flaw
     FODDER_SHIPS = {"light_fighter", "heavy_fighter", "small_cargo", "large_cargo", "espionage_probe"}
@@ -438,8 +488,12 @@ def _sensitivity_analysis(
         # Apply same effective-loss formula as the GA so tags are consistent
         _pen = resource_preference_penalty(variant, resource_weights, preference_beta) if preference_beta > 0 else 0.0
         variant_loss = raw_loss * loss_scale + _pen
-        if base_loss > 0:
-            impact_pct = ((variant_loss - base_loss) / base_loss) * 100
+        # Compare against the EFFECTIVE base loss (raw * loss_scale + base
+        # preference penalty). Comparing effective variant losses against
+        # the RAW base made every impact read as (loss_scale - 1) * 100 -
+        # a constant -80% in profit mode (loss_scale=0.2) for ALL ships.
+        if _base_effective_loss > 0:
+            impact_pct = ((variant_loss - _base_effective_loss) / _base_effective_loss) * 100
         elif variant_loss > 0:
             impact_pct = 999.0
         else:
@@ -1245,9 +1299,32 @@ def optimize(
     # Reference ship: Battlecruiser (factor 1.00). See
     # ogame_optimizer.core.fleet.fleet_penalty_multiplier for the table.
     fuel_speed_penalty_pct: float = 0.0,
+    # When True (default), sensitivity-analysis sims may run at a validated
+    # 1/10 or 1/100 scale-down (progressive_seeds.validate_scale) for a big
+    # speed-up on large scenarios. GA rounds and final validation always
+    # run at full scale regardless.
+    validate_scale: bool = True,
 ) -> OptimizationResult:
     enemy_defenses = enemy_defenses or {}
     t0 = time.time()
+
+    # Validated scale-down divisor for the sensitivity sims (speed lever).
+    sens_divisor = 1
+    if validate_scale and sum(enemy_fleet.values()) >= 2000:
+        try:
+            from ogame_optimizer.optimizer.progressive_seeds import validate_scale as _vscale
+            _budget_probe = compute_budget(enemy_fleet, enemy_defenses, budget_multiplier)
+            sens_divisor = _vscale(
+                enemy_fleet, enemy_defenses, _budget_probe,
+                attacker_tech=attacker_tech, enemy_tech=enemy_tech,
+                debris_pct=debris_pct, deuterium_in_debris=deuterium_in_debris,
+                exclude_ships=exclude_ships, base_seed=base_seed, n_eval_sims=15,
+            )
+        except Exception as _exc:
+            _log.warning("Scale validation failed (%s); using full scale", _exc)
+            sens_divisor = 1
+        if sens_divisor > 1:
+            _log.info("Sensitivity sims will run at 1/%d scale (validated within 10%%)", sens_divisor)
     _log.info("=== OPTIMIZE START mode=%s multiplier=%s seed=%d ===", mode, budget_multiplier, base_seed)
     _log.info("Enemy fleet: %s", enemy_fleet)
     _log.info("Enemy defenses: %s", enemy_defenses)
@@ -1340,6 +1417,7 @@ def optimize(
                 loss_scale=_loss_scale, resource_weights=resource_weights,
                 preference_beta=preference_beta,
                 skip_ships=set(base_fleet.keys()),
+                sim_divisor=sens_divisor,
             )
 
             # Compute defender analysis (per-ship survival)
@@ -1757,6 +1835,7 @@ def optimize(
             loss_scale=_loss_scale, resource_weights=resource_weights,
             preference_beta=preference_beta,
             max_total_seconds=20.0,
+            sim_divisor=sens_divisor,
         )
         # Greedy individual-swap acceptance. The old all-at-once prune
         # (remove EVERY dead-weight type simultaneously into one radical
@@ -1913,6 +1992,7 @@ def optimize(
         loss_scale=_loss_scale, resource_weights=resource_weights,
         preference_beta=preference_beta,
         max_total_seconds=20.0,
+        sim_divisor=sens_divisor,
     )
 
     # Compute per-ship survival rates (for shield marker in UI) using the
