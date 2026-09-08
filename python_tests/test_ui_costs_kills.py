@@ -247,7 +247,7 @@ def test_ui_strings_costs_kills_transparency(client):
     assert "Fleet Cost (M/C/D)" in js
     assert "Additions Cost (M/C/D)" in js
     index = client.get("/").text
-    assert "v=20260908a" in index  # cache-bust bumped with fleet cost-share bar
+    assert "v=20260908b" in index  # cache-bust bumped with fleet cost-share bar
     assert "ship-cost-chart" in index  # M/C/D column chart container
     assert "buildShipCostChart" in js  # chart builder ships in app.js
     assert "scc-bar" in js  # chart bar elements

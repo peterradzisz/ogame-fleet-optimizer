@@ -109,7 +109,7 @@ def test_ui_wiring_lf_banner(client):
     index = client.get("/").text
     assert 'id="lf-share-banner"' in index
     assert 'class="lf-banner hidden"' in index
-    assert "v=20260908a" in index  # cache-bust bumped (fleet cost-share bar)
+    assert "v=20260908b" in index  # cache-bust bumped (fleet cost-share bar)
 
     js = client.get("/static/app.js").text
     assert "lf_share" in js

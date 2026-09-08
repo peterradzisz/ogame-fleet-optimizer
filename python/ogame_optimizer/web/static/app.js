@@ -937,9 +937,10 @@ if (parseBtn) {
   });
 }
 
-  // Deathstar and Bomber are default-excluded via the `checked` attribute
-  // in the HTML so they are visible to the user on first paint. Do not
-  // toggle them in JS — it would silently override what the user sees.
+  // Default-excluded ships (Deathstar, Bomber, Recycler, Small/Large
+  // Cargo, Espionage Probe) are set via the `checked` attribute in the
+  // HTML so they are visible to the user on first paint. Do not toggle
+  // them in JS — it would silently override what the user sees.
 
   // Resource priority: reset-to-1:1:1 button (so users can quickly
   // disable the metal preference if they don't want it)
