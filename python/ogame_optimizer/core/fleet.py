@@ -313,11 +313,14 @@ def validate_fleet_in_budget(
 __all__ = [
     "DEFENSES_COST",
     "SHIPS_COST",
+    "SHIP_BASE_ATK",
+    "SHIP_FUEL_SPEED_PENALTY",
     "Fleet",
     "compute_budget",
     "fleet_value",
     "weighted_fleet_value",
     "resource_preference_penalty",
+    "fleet_penalty_multiplier",
     "validate_fleet_in_budget",
     "validate_multiplier",
 ]
@@ -334,3 +337,88 @@ SHIP_BASE_ATK: Dict[str, int] = {
     "solar_satellite": 1,  # Can't meaningfully attack
     "crawler": 1,          # Can't meaningfully attack
 }
+
+
+
+# ---------------------------------------------------------------------------
+# Fuel / speed penalty map (engine adjustment per Session 5)
+# ---------------------------------------------------------------------------
+# Per-ship base penalty factors used by fleet_penalty_multiplier.
+# Reference ship: Battlecruiser (penalty = 1.0, no adjustment).
+# Other ships get a multiplier >= 1.0 that biases the optimizer AWAY from
+# them when the user enables the fuel/speed penalty slider. Values below
+# represent the max-strength penalty (slider at 100%). The slider scales
+# linearly: pct=0 disables, pct=5 applies half the table, pct=10 full.
+#
+# Penalty sources:
+#   deathstar (10%): pathologically slow (base speed 100, lowest in game),
+#                    1M deuterium per ship vs 15k for BC, can't be massed.
+#   bomber    ( 7%): slow (4M base), expensive deuterium (15k), niche use.
+#   reaper    ( 5%): fast (7M base) but expensive deuterium (20k).
+#   destroyer ( 4%): slow (5M base), expensive deuterium (15k).
+#   battleship( 3%): very slow (5M base), no RF, but cheap and durable.
+#   bc, lf, hf, cruiser, cargo, probe: 1.0 (cheap+fast reference set).
+SHIP_FUEL_SPEED_PENALTY: Dict[str, float] = {
+    "deathstar":        1.10,
+    "bomber":           1.07,
+    "reaper":           1.05,
+    "destroyer":        1.04,
+    "battleship":       1.03,
+    "battlecruiser":    1.00,  # reference
+    "light_fighter":    1.00,
+    "heavy_fighter":    1.00,
+    "cruiser":          1.00,
+    "pathfinder":       1.00,
+    "small_cargo":      1.00,
+    "large_cargo":      1.00,
+    "espionage_probe":  1.00,
+    "recycler":         1.00,
+}
+
+
+def fleet_penalty_multiplier(
+    fleet,
+    pct: float = 0.0,
+) -> float:
+    """Return weighted-average penalty factor for fleet, scaled by pct.
+
+    Computes sum(count * penalty[ship]) / sum(count) where penalty[ship]
+    is linearly interpolated between 1.0 (no effect, pct=0) and
+    SHIP_FUEL_SPEED_PENALTY[ship] (max effect, pct=10). pct is clamped to
+    [0, 10]; values <= 0 return 1.0 immediately (no effect).
+
+    Count-weighted (not cost-weighted): a fleet of 1 BC + 1 Deathstar
+    yields (1.00 + 1.10) / 2 = 1.05 regardless of resource spend. This is
+    intentional: the user is penalising "presence" of slow/deut-expensive
+    ships because even one Deathstar slows the entire fleet travel time.
+
+    Parameters
+    ----------
+    fleet : Mapping[str, int]
+        Attacker composition. Empty/zero-count ships ignored.
+    pct : float
+        User-facing percentage 0-10. 0 disables. 5 applies half the table.
+        10 applies the table in full.
+
+    Returns
+    -------
+    float
+        Multiplier >= 1.0. Multiply mean_attacker_loss by this to bias
+        toward cheap-and-fast ships at the cost of slow/deut-expensive ones.
+    """
+    if pct <= 0:
+        return 1.0
+    if pct > 10.0:
+        pct = 10.0
+    total = 0
+    weighted = 0.0
+    for ship, count in fleet.items():
+        if count <= 0:
+            continue
+        base = SHIP_FUEL_SPEED_PENALTY.get(ship, 1.0)
+        factor = 1.0 + (base - 1.0) * (pct / 10.0)
+        weighted += factor * count
+        total += count
+    if total == 0:
+        return 1.0
+    return weighted / total

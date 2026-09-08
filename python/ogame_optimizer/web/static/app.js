@@ -147,6 +147,7 @@
         ],
         preference_beta: parseFloat((document.getElementById('preference_beta')||{value:'0.05'}).value || '0.05'),
         include_alternatives: document.getElementById('include_alternatives') ? document.getElementById('include_alternatives').checked : true,
+        fuel_speed_penalty_pct: parseFloat((document.getElementById('fuel_speed_penalty_pct')||{value:'0'}).value || '0'),
       };
 
       // Check: 0.0x requires base fleet
@@ -917,6 +918,16 @@ if (parseBtn) {
   if (betaSlider && betaLabel) {
     betaSlider.addEventListener("input", function() {
       betaLabel.textContent = parseFloat(betaSlider.value).toFixed(2);
+    });
+  }
+
+  // Live-update the fuel/speed penalty slider display
+  var fspSlider = document.getElementById("fuel_speed_penalty_pct");
+  var fspLabel = document.getElementById("fuel_speed_penalty_pct_value");
+  if (fspSlider && fspLabel) {
+    fspSlider.addEventListener("input", function() {
+      var v = parseFloat(fspSlider.value);
+      fspLabel.textContent = (v === 0) ? "0 (off)" : v.toFixed(1);
     });
   }
 

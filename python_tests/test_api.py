@@ -250,3 +250,23 @@ def test_optimize_seed_fleet_empty_dict_accepted(client):
     """Empty seed_fleet dict = no seed (orchestration treats falsy as no-seed)."""
     r = client.post("/api/optimize", json=_seed_fleet_payload(seed_fleet={}))
     assert r.status_code == 200, r.text
+from pydantic import ValidationError
+from ogame_optimizer.api.schemas import OptimizeRequest
+
+def test_optimize_request_fuel_speed_penalty_default_zero():
+    req = OptimizeRequest(enemy_fleet={"light_fighter": 100})
+    assert req.fuel_speed_penalty_pct == 0.0
+
+def test_optimize_request_fuel_speed_penalty_accepts_5_and_10():
+    from ogame_optimizer.api.schemas import OptimizeRequest
+    for v in (0.0, 1.5, 5.0, 10.0):
+        req = OptimizeRequest(enemy_fleet={"light_fighter": 100}, fuel_speed_penalty_pct=v)
+        assert req.fuel_speed_penalty_pct == v
+
+def test_optimize_request_fuel_speed_penalty_rejects_out_of_range():
+    for bad in (-1.0, 11.0, 100.0):
+        try:
+            OptimizeRequest(enemy_fleet={"light_fighter": 100}, fuel_speed_penalty_pct=bad)
+            assert False, f"Should have rejected {bad}"
+        except ValidationError:
+            pass

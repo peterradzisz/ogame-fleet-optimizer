@@ -255,3 +255,32 @@ class TestEvaluateFleet:
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+import pytest
+
+def test_compute_fitness_penalty_factor_attack_mode():
+    from ogame_optimizer.optimizer.statistics import compute_fitness
+    res = {"win_probability": 1.0, "mean_attacker_loss": 1000, "fleet_value": 10000, "debris_total": 0}
+    base = compute_fitness(res, "attack", budget=10000, penalty_factor=1.0)
+    amplified = compute_fitness(res, "attack", budget=10000, penalty_factor=1.10)
+    assert amplified == pytest.approx(base * 1.10)
+
+def test_compute_fitness_penalty_factor_defend_unchanged():
+    from ogame_optimizer.optimizer.statistics import compute_fitness
+    res = {"win_probability": 0.0, "mean_defender_loss": 1000, "fleet_value": 10000, "debris_total": 0}
+    base = compute_fitness(res, "defend", budget=10000, penalty_factor=1.0)
+    amplified = compute_fitness(res, "defend", budget=10000, penalty_factor=1.10)
+    assert amplified == base
+
+def test_compute_fitness_penalty_factor_one_is_no_op():
+    from ogame_optimizer.optimizer.statistics import compute_fitness
+    res = {"win_probability": 1.0, "mean_attacker_loss": 1000, "fleet_value": 10000, "debris_total": 0}
+    a = compute_fitness(res, "attack", budget=10000)
+    b = compute_fitness(res, "attack", budget=10000, penalty_factor=1.0)
+    assert a == b
+
+def test_compute_fitness_penalty_factor_below_one_unchanged():
+    from ogame_optimizer.optimizer.statistics import compute_fitness
+    res = {"win_probability": 1.0, "mean_attacker_loss": 1000, "fleet_value": 10000, "debris_total": 0}
+    base = compute_fitness(res, "attack", budget=10000)
+    reduced = compute_fitness(res, "attack", budget=10000, penalty_factor=0.5)
+    assert reduced == base

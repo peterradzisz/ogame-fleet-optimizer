@@ -279,6 +279,7 @@ def compute_fitness(
     mode: str,
     budget: int,
     min_gain_pct: float = 0.0,
+    penalty_factor: float = 1.0,
 ) -> float:
     """Convert a batch result into a scalar fitness the GA maximises.
 
@@ -316,6 +317,12 @@ def compute_fitness(
     budget
         Positive resource budget used to normalise the loss into ``[-1, 0]``
         territory (0 = lost nothing, -1 = lost the entire budget).
+    penalty_factor
+        Multiplier applied to attacker loss before normalisation. Defaults
+        to 1.0 (no effect). Values > 1.0 are produced by
+        :func:`ogame_optimizer.core.fleet.fleet_penalty_multiplier` when the
+        user enables the fuel/speed penalty slider. Only affects attack
+        mode (defenders don't travel).
 
     Returns
     -------
@@ -376,5 +383,9 @@ def compute_fitness(
                 "for defend mode"
             )
         loss = float(batch_result["mean_defender_loss"])
+
+    # Fuel / speed penalty: only attack mode. Defenders don't travel.
+    if mode_str == "attack" and penalty_factor > 1.0:
+        loss = loss * penalty_factor
 
     return -(loss / budget)

@@ -27,6 +27,97 @@ COMBAT_SHIPS = [
 ]
 
 
+
+
+def validate_scale(
+    enemy_fleet,
+    enemy_defenses,
+    budget,
+    attacker_tech=(0, 0, 0),
+    enemy_tech=(0, 0, 0),
+    debris_pct=0.30,
+    deuterium_in_debris=False,
+    exclude_ships=None,
+    base_seed=42,
+    n_eval_sims=25,
+    threshold=0.10,
+):
+    """Return the largest valid divisor for downscaling Phase 0/1 sims.
+
+    Runs pure single-type fleets at divisor 1, 10, 100 on three sample
+    ships and compares per-resource-unit TRUE_NET return rate. If the
+    scaled return rate is within ``threshold`` (default 10%) of full
+    scale for every sample, that divisor is valid. Returns the largest
+    valid divisor (10 or 100); returns 1 if no downscaling passes.
+
+    Per-resource-unit return = TRUE_NET / fleet_value. We compare this
+    metric because absolute TRUE_NET scales linearly with fleet size;
+    raw comparison would always show large gaps.
+
+    Parameters match :func:`generate_progressive_seeds`.
+    """
+    from ogame_optimizer.core.combat import simulate_batch
+    from ogame_optimizer.core.fleet import SHIPS_COST, fleet_value
+
+    exclude_set = set(exclude_ships or [])
+    candidates = [s for s in COMBAT_SHIPS if s not in exclude_set][:3]
+    if not candidates:
+        return 1
+
+    def _scale(fleet, d):
+        if d == 1:
+            return dict(fleet)
+        return {s: (n // d) for s, n in fleet.items() if (n // d) >= 1}
+
+    def _per_unit_return(fleet, d):
+        scaled_enemy = _scale(enemy_fleet, d)
+        scaled_atk = _scale(fleet, d)
+        if not scaled_atk:
+            return 0.0
+        result = simulate_batch(
+            attacker=scaled_atk,
+            defender=scaled_enemy,
+            defender_defenses=enemy_defenses or {},
+            attacker_tech=attacker_tech,
+            defender_tech=enemy_tech,
+            n_sims=n_eval_sims,
+            base_seed=base_seed,
+            debris_pct=debris_pct,
+            deuterium_in_debris=deuterium_in_debris,
+        )
+        al = float(result.get("mean_attacker_loss", 0))
+        dl = float(result.get("mean_defender_loss", 0))
+        net = 0.80 * dl - 0.20 * al
+        fv = max(1, fleet_value(scaled_atk))
+        return net / fv
+
+    full_rates = {}
+    for ship in candidates:
+        cnt = budget // sum(SHIPS_COST[ship])
+        if cnt < 1:
+            continue
+        full_rates[ship] = _per_unit_return({ship: cnt}, 1)
+
+    valid = [1]
+    for d in [10, 100]:
+        all_within = True
+        for ship, full_rate in full_rates.items():
+            cnt = budget // sum(SHIPS_COST[ship])
+            if cnt < 1:
+                continue
+            scaled_rate = _per_unit_return({ship: cnt}, d)
+            if full_rate == 0:
+                if abs(scaled_rate) >= 1e-6:
+                    all_within = False
+                    break
+                continue
+            diff = abs(scaled_rate - full_rate) / abs(full_rate)
+            if diff > threshold:
+                all_within = False
+                break
+        if all_within:
+            valid.append(d)
+    return max(valid)
 def generate_progressive_seeds(
     enemy_fleet: Dict[str, int],
     enemy_defenses: Dict[str, int],

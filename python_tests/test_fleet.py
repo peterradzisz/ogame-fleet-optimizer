@@ -240,3 +240,48 @@ def test_rip_budget() -> None:
 def test_rip_does_not_overflow_python_int() -> None:
     # 100,000 RIP × 10,000,000 = 1e12 — fits trivially in Python int.
     assert fleet_value({"deathstar": 100_000}) == 1_000_000_000_000
+from ogame_optimizer.core.fleet import (
+    SHIPS_COST, SHIP_FUEL_SPEED_PENALTY, fleet_penalty_multiplier,
+)
+import pytest
+
+def test_fleet_penalty_multiplier_disabled_by_default():
+    assert fleet_penalty_multiplier({"deathstar": 100}, pct=0) == 1.0
+    assert fleet_penalty_multiplier({"light_fighter": 1000, "battlecruiser": 50}, pct=0) == 1.0
+
+def test_fleet_penalty_multiplier_pure_ships():
+    for ship in ("light_fighter", "heavy_fighter", "cruiser", "battlecruiser"):
+        assert fleet_penalty_multiplier({ship: 100}, pct=10) == pytest.approx(1.0)
+    for ship, expected in SHIP_FUEL_SPEED_PENALTY.items():
+        if expected == 1.0:
+            continue
+        actual = fleet_penalty_multiplier({ship: 100}, pct=10)
+        assert actual == pytest.approx(expected), f"{ship}: expected {expected}, got {actual}"
+
+def test_fleet_penalty_multiplier_mix():
+    fl = {"battlecruiser": 50, "deathstar": 50}
+    assert fleet_penalty_multiplier(fl, pct=10) == pytest.approx(1.05)
+
+def test_fleet_penalty_multiplier_interpolation():
+    assert fleet_penalty_multiplier({"deathstar": 1}, pct=10) == pytest.approx(1.10)
+    assert fleet_penalty_multiplier({"deathstar": 1}, pct=5) == pytest.approx(1.05)
+    assert fleet_penalty_multiplier({"deathstar": 1}, pct=2) == pytest.approx(1.02)
+
+def test_fleet_penalty_multiplier_clamps_negative():
+    assert fleet_penalty_multiplier({"deathstar": 100}, pct=-5) == 1.0
+
+def test_fleet_penalty_multiplier_clamps_above_10():
+    assert fleet_penalty_multiplier({"deathstar": 100}, pct=100) == pytest.approx(1.10)
+
+def test_fleet_penalty_multiplier_zero_count():
+    fl = {"battlecruiser": 100, "deathstar": 0}
+    assert fleet_penalty_multiplier(fl, pct=10) == pytest.approx(1.0)
+
+def test_fleet_penalty_multiplier_empty():
+    assert fleet_penalty_multiplier({}, pct=10) == 1.0
+
+def test_ship_fuel_speed_penalty_covers_all_combat_ships():
+    for ship in SHIPS_COST:
+        assert ship in SHIP_FUEL_SPEED_PENALTY
+        m = fleet_penalty_multiplier({ship: 100}, pct=10)
+        assert 1.0 <= m <= 1.20

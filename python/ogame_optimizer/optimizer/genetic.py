@@ -8,7 +8,7 @@ from typing import Dict, List, Tuple, Optional
 from ogame_optimizer.core.combat import evaluate_population
 from ogame_optimizer.core.fast_combat import evaluate_population_fast, should_use_fast
 from ogame_optimizer.core.fleet import resource_preference_penalty
-from ogame_optimizer.core.fleet import SHIPS_COST, fleet_value
+from ogame_optimizer.core.fleet import SHIPS_COST, fleet_value, fleet_penalty_multiplier
 from ogame_optimizer.optimizer.statistics import CRNManager
 from ogame_optimizer.optimizer.objective import ObjectiveMode
 
@@ -326,6 +326,7 @@ def _evaluate_population_with_crn(
     min_gain_pct: float = 0.0,
     base_fleet: Optional[Dict[str, int]] = None,
     deadline: Optional[float] = None,
+    fuel_speed_penalty_pct: float = 0.0,
 ) -> List[float]:
     """Evaluate all fleets in population using CRN (same base_seed for all).
 
@@ -426,6 +427,14 @@ def _evaluate_population_with_crn(
         # 1 - debris_pct, so debris_pct = 1 - loss_scale (0 in minimise mode).
         debris_pct = max(0.0, 1.0 - loss_scale)
 
+        # Fuel / speed penalty: amplifier on attacker loss for slow or
+        # deuterium-expensive ships (Destroyer, Reaper, Bomber, Deathstar).
+        # Only applied in attack mode (defenders do not travel).
+        if mode == ObjectiveMode.ATTACK and fuel_speed_penalty_pct > 0:
+            _penalty_combat = combat_fleets[i] if combat_fleets else population_fleets[i]
+            _pf = fleet_penalty_multiplier(_penalty_combat, fuel_speed_penalty_pct)
+            mean_loss = mean_loss * _pf
+
         # Base fitness: -(effective own loss + composition penalty) / budget.
         # Identical to the previous formula for winners.
         base = -(mean_loss * loss_scale + penalty) / max(budget, 1)
@@ -477,6 +486,7 @@ def genetic_optimize(
     preference_beta: float = 0.0,
     min_gain_pct: float = 0.0,
     base_fleet: Optional[Dict[str, int]] = None,
+    fuel_speed_penalty_pct: float = 0.0,
 ) -> GAResult:
     """Run the GA pipeline."""
     if config is None:
@@ -523,6 +533,7 @@ def genetic_optimize(
             min_gain_pct=min_gain_pct,
             base_fleet=base_fleet,
             deadline=deadline,
+            fuel_speed_penalty_pct=fuel_speed_penalty_pct,
         )
         total_evals += len(fitnesses)
         last_fitnesses = fitnesses

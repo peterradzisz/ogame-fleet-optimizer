@@ -283,6 +283,24 @@ Large Shield Dome / 1"></textarea>
           Default 1:1:1 @ β=0.05 weighs every resource equally; raise a weight only if you're overflowing with that resource.
         </p>
       </fieldset>
+
+      <div class="alpha-slider-row" style="margin-top: 1.2rem; padding-top: 0.8rem; border-top: 1px solid rgba(255,255,255,0.1);">
+        <label class="alpha-slider-label" for="fuel_speed_penalty_pct">
+          Fuel / speed penalty (slow & deut-expensive ships):
+          <span id="fuel_speed_penalty_pct_value" class="alpha-slider-value">0 (off)</span>
+        </label>
+        <input type="range" id="fuel_speed_penalty_pct" min="0" max="10" step="0.5" value="0">
+        <div class="alpha-slider-ticks">
+          <span>0 (off)</span>
+          <span>5 (moderate)</span>
+          <span>10 (strong)</span>
+        </div>
+        <p class="resource-weights-hint">
+          Bias the optimizer away from slow / deuterium-expensive ships (Destroyer,
+          Reaper, Bomber, Deathstar) toward cheap+fast ones (LF, HF, Cruiser,
+          BC). Reference ship is Battlecruiser. 0 disables entirely.
+        </p>
+      </div>
     </div>
   </fieldset>
 

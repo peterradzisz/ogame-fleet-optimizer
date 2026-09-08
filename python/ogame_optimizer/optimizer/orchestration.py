@@ -1239,6 +1239,12 @@ def optimize(
     # genuinely-different, quality-gated compositions after the primary
     # result is frozen (adds ~2x (0.5-4s GA + validation) wall time).
     include_alternatives: bool = True,
+    # Fuel / speed penalty slider (0-10). 0 disables. Biases the optimizer
+    # away from slow / deuterium-expensive ships (Destroyer, Reaper, Bomber,
+    # Deathstar) and toward cheap+fast ships (LF, HF, Cruiser, BC).
+    # Reference ship: Battlecruiser (factor 1.00). See
+    # ogame_optimizer.core.fleet.fleet_penalty_multiplier for the table.
+    fuel_speed_penalty_pct: float = 0.0,
 ) -> OptimizationResult:
     enemy_defenses = enemy_defenses or {}
     t0 = time.time()
@@ -1592,6 +1598,7 @@ def optimize(
             preference_beta=preference_beta,
             min_gain_pct=min_gain_pct,
             base_fleet=base_fleet,
+            fuel_speed_penalty_pct=fuel_speed_penalty_pct,
         )
 
         # Quick validate (merge base for combat)
@@ -1657,6 +1664,7 @@ def optimize(
             preference_beta=preference_beta,
             min_gain_pct=min_gain_pct,
             base_fleet=base_fleet,
+            fuel_speed_penalty_pct=fuel_speed_penalty_pct,
         )
 
         # Validate merged fleet (base + additions)

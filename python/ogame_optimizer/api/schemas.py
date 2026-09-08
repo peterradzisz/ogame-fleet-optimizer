@@ -83,6 +83,13 @@ class OptimizeRequest(BaseModel):
     # Fleet alternatives ("Option B/C"): False disables Option B/C generation
     # (primary optimisation result is unaffected either way).
     include_alternatives: bool = True
+    # Fuel / speed penalty slider (0-10). 0 disables (default, backward
+    # compatible). Higher values bias the optimizer away from slow /
+    # deuterium-expensive ships (Destroyer, Reaper, Bomber, Deathstar) and
+    # toward cheap+fast ships (LF, HF, Cruiser, BC). Reference ship:
+    # Battlecruiser (factor 1.00). See fleet_penalty_multiplier for the
+    # table. 5 = moderate bias, 10 = strong bias.
+    fuel_speed_penalty_pct: float = 0.0
 
     @field_validator("budget_multiplier")
     @classmethod
@@ -106,6 +113,13 @@ class OptimizeRequest(BaseModel):
     def validate_min_gain(cls, v: float) -> float:
         if v < 0 or v > 100:
             raise ValueError(f"min_gain_pct must be in [0, 100], got {v}")
+        return v
+
+    @field_validator("fuel_speed_penalty_pct")
+    @classmethod
+    def validate_fuel_speed_penalty(cls, v: float) -> float:
+        if v < 0 or v > 10:
+            raise ValueError(f"fuel_speed_penalty_pct must be in [0, 10], got {v}")
         return v
 
     @field_validator("seed_fleet")
