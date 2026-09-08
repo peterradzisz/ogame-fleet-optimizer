@@ -203,11 +203,26 @@
     currentAltIdx = 0;
     var banner = document.getElementById("win-threshold-banner");
     if (banner) {
-      if (data.win_threshold_met === false) {
+      if (data.budget_multiplier === 0 && data.base_fleet_count > 0) {
+        banner.textContent = "Simulation only (0.0x): your fleet was evaluated as-is - no additions are proposed in this mode. Pick a higher Budget Multiplier (0.5x-2.0x) to get build advice.";
+        banner.className = "win-banner";
+      } else if (data.win_threshold_met === false) {
         banner.textContent = "Not winnable at this budget — the fleet below is the least-loss option, not a winner. Raise Budget Multiplier (try 1.5–2.0x) or start from My Fleet.";
         banner.className = "win-banner";
       } else {
         banner.className = "win-banner hidden";
+      }
+    }
+    // Base-already-wins banner: base_fleet mode where the base fleet alone
+    // wins >=95% of sims - the optimizer deliberately proposes NO additions
+    // (extra ships would only add losses). Explain instead of silence.
+    var baseWinsBanner = document.getElementById("base-wins-banner");
+    if (baseWinsBanner) {
+      if (data.base_already_wins === true) {
+        baseWinsBanner.textContent = "Your fleet already wins this fight (>=95% of simulations) - no additions proposed, since extra ships would only add losses. Set Budget Multiplier to 0.0x to simulate your fleet alone, or enter a stronger target to get build advice.";
+        baseWinsBanner.className = "win-banner";
+      } else {
+        baseWinsBanner.className = "win-banner hidden";
       }
     }
     // LF-dominance banner: only when the scenario IS winnable (the
@@ -980,6 +995,12 @@ if (parseBtn) {
   }
 
   // ---- Tab switching ----
+  // Track whether the user explicitly picked a budget multiplier so
+  // switchTab's per-tab default doesn't override their choice.
+  var multUserTouched = false;
+  if (multSelect) {
+    multSelect.addEventListener("change", function() { multUserTouched = true; });
+  }
   var tabBtns = document.querySelectorAll(".tab-btn");
   var myFleetSection = document.getElementById("my-fleet-section");
   var budgetHintCounter = document.getElementById("budget-hint-counter");
@@ -994,8 +1015,11 @@ if (parseBtn) {
     if (myFleetSection) myFleetSection.classList.toggle("hidden", tabName !== "myfleet");
     if (budgetHintCounter) budgetHintCounter.classList.toggle("hidden", tabName === "myfleet");
     if (budgetHintMyfleet) budgetHintMyfleet.classList.toggle("hidden", tabName !== "myfleet");
-    // Default multiplier per tab
-    if (multSelect) {
+    // Default multiplier per tab - but NEVER clobber an explicit user
+    // selection (multUserTouched set on the select's change event).
+    // Silently resetting 0.9X -> 0.1X made runs look like "no changes
+    // proposed" while the user believed they were at 0.9X.
+    if (multSelect && !multUserTouched) {
       multSelect.value = tabName === "myfleet" ? "0.1" : "1.0";
     }
     // Reset refine state on tab switch (scenario context changed)

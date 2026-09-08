@@ -270,6 +270,9 @@ class OptimizationResult:
     base_fleet_cost: int = 0
     base_fleet_count: int = 0
     recommended_additions: Dict[str, int] = field(default_factory=dict)
+    # True when base_fleet mode hit the already-wins early-exit: the base
+    # fleet alone wins >=95% of sims, so no additions were proposed.
+    base_already_wins: bool = False
     # Costs & kills transparency: per-resource cost splits of the recommended
     # fleet (merged, = fleet_value split by M/C/D) and of the additions line,
     # plus per-attacker-ship kill attribution estimates.
@@ -1534,6 +1537,7 @@ def optimize(
 
             return OptimizationResult(
                 recommended_fleet=dict(base_fleet),
+                base_already_wins=True,
                 fleet_value=_base_fv,
                 fleet_lost_pct=(_base_raw_loss / _base_fv * 100) if _base_fv > 0 else 0,
                 ships_lost_count=int(_base_check.get("ships_lost", 0)),

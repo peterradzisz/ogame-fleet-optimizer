@@ -191,6 +191,8 @@ class OptimizeResponse(BaseModel):
     base_fleet: Dict[str, int] = Field(default_factory=dict)
     base_fleet_cost: int = 0
     base_fleet_count: int = 0
+    base_already_wins: bool = False
+    budget_multiplier: float = 1.0
     recommended_additions: Dict[str, int] = Field(default_factory=dict)
     # Costs & kills transparency
     fleet_cost_metal: int = 0

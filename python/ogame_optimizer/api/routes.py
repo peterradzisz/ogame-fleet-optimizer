@@ -219,6 +219,8 @@ def run_optimize(req: OptimizeRequest) -> OptimizeResponse:
             base_fleet_cost=result.base_fleet_cost,
             base_fleet_count=result.base_fleet_count,
             recommended_additions=result.recommended_additions,
+            base_already_wins=result.base_already_wins,
+            budget_multiplier=req.budget_multiplier,
             fleet_cost_metal=result.fleet_cost_metal,
             fleet_cost_crystal=result.fleet_cost_crystal,
             fleet_cost_deuterium=result.fleet_cost_deuterium,
