@@ -4,7 +4,9 @@ Logs every phase boundary so failures are easy to trace.
 """
 from __future__ import annotations
 
+import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -451,6 +453,13 @@ def _sensitivity_analysis(
             pass  # probe failed -> keep n_sims as-is
 
     analysis = {}
+
+    # First pass: build every variant + its sim seed upfront. Each variant's
+    # simulate_batch call goes through the Rust core which RELEASES the GIL,
+    # so ThreadPoolExecutor.map actually parallelises them across cores.
+    # The probe sim above and base-detail sim below stay serial (each is a
+    # single small call).
+    variant_specs = []
     for idx, ship in enumerate(present_ships):
         # Redistribute target = highest value remaining ship
         remaining = {s: v for s, v in ship_values.items() if s != ship}
@@ -472,18 +481,34 @@ def _sensitivity_analysis(
         if target_cost > 0:
             extra_count = freed_budget // target_cost
             variant[target] = variant.get(target, 0) + extra_count
+        variant_specs.append((idx, ship, variant, target, extra_count))
 
-        result = simulate_batch(
-            attacker=variant,
+    def _run_variant_sim(args):
+        _idx, _ship_unused, _variant, _target_unused, _extra_unused = args
+        return simulate_batch(
+            attacker=_variant,
             defender=enemy_fleet,
             defender_defenses=enemy_defenses,
             attacker_tech=attacker_tech,
             defender_tech=enemy_tech,
             n_sims=n_sims,
-            base_seed=base_seed + 50000 + idx,
+            base_seed=base_seed + 50000 + _idx,
             debris_pct=debris_pct,
             deuterium_in_debris=deuterium_in_debris,
         )
+
+    if len(variant_specs) > 1:
+        _max_workers = min(len(variant_specs), os.cpu_count() or 4, 8)
+        with ThreadPoolExecutor(max_workers=_max_workers) as _pool:
+            sim_results = list(_pool.map(_run_variant_sim, variant_specs))
+    else:
+        sim_results = [_run_variant_sim(s) for s in variant_specs]
+
+    # Second pass: post-process (fast arithmetic + per-type detail sim). The
+    # simulate_combat_fast detail sims are pure-Python single-seed calls that
+    # hold the GIL, so they run sequentially; the expensive part (the Rust
+    # batch sim) already parallelised above.
+    for (idx, ship, variant, target, extra_count), result in zip(variant_specs, sim_results):
         raw_loss = float(result.get("mean_attacker_loss", base_loss))
         # Apply same effective-loss formula as the GA so tags are consistent
         _pen = resource_preference_penalty(variant, resource_weights, preference_beta) if preference_beta > 0 else 0.0
@@ -541,7 +566,6 @@ def _sensitivity_analysis(
                   ship, impact_pct, tag, target, extra_count)
 
     return analysis
-
 def _rust_verify(
     fleet: Dict[str, int],
     enemy_fleet: Dict[str, int],
@@ -813,15 +837,21 @@ def _greedy_swap_refine(
     cur_wp = incumbent_wp
     accepted = 0
     t_start = time.time()
+
+    # Phase A: build every candidate variant upfront. Each variant tells us
+    # "remove ship X, redistribute its budget to target Y". Variants are
+    # built against the ORIGINAL cur_fleet (so for chained accepts the second
+    # swap's loss was computed against the pre-first-accept fleet; this is a
+    # rare edge case in practice - _SWAP_PROMISE_PCT=15 + _SWAP_ACCEPT_PCT=5
+    # are strict, so 0-1 accepts per pass is the norm).
+    candidates_with_variants = []
     for idx, ship in enumerate(candidates):
-        # Runtime-only wall-clock cap, checked between candidates: skip the
-        # remainder once the pass has spent ~15s validating swaps.
         if time.time() - t_start > _SWAP_TIME_BUDGET_S:
-            _log.info("  Swap pass: %.0fs time cap reached - skipping %d remaining candidate(s)",
+            _log.info("  Swap pass: %.0fs time cap reached during prebuild - skipping %d remaining candidate(s)",
                       _SWAP_TIME_BUDGET_S, len(candidates) - idx)
             break
-        if cur_loss <= 0:
-            break  # a zero-loss incumbent cannot be improved
+        if incumbent_loss <= 0:
+            break
         target = sensitivity[ship]["redistributed_to"]
         variant = _swap_variant(cur_fleet, ship, target, base_fleet)
         if not variant or sum(variant.values()) <= 0:
@@ -832,13 +862,63 @@ def _greedy_swap_refine(
             _log.info("  --- Phase C: swap %s->%s skipped (empty after budget enforcement) ---",
                       ship, target)
             continue
-        val = simulate_batch(
-            attacker=variant, defender=enemy_fleet,
+        candidates_with_variants.append((idx, ship, target, variant))
+
+    # Phase B: parallelise the validation sims. The Rust combat core
+    # releases the GIL, so ThreadPoolExecutor.map actually runs sims on
+    # multiple cores. Cap at 8 workers (diminishing returns beyond that
+    # for typical fleet sizes; over-subscription hurts thread setup).
+    def _run_swap_sim(item):
+        _idx, _ship_unused, _target_unused, _variant = item
+        return simulate_batch(
+            attacker=_variant, defender=enemy_fleet,
             defender_defenses=enemy_defenses, attacker_tech=attacker_tech,
             defender_tech=enemy_tech, n_sims=n_sims,
-            base_seed=base_seed + 7001 + 17 * idx,
+            base_seed=base_seed + 7001 + 17 * _idx,
             debris_pct=debris_pct, deuterium_in_debris=deuterium_in_debris,
         )
+
+    def _sim_batch(items):
+        if len(items) > 1:
+            _mw = min(len(items), os.cpu_count() or 4, 8)
+            with ThreadPoolExecutor(max_workers=_mw) as _pool:
+                return [val for val in _pool.map(_run_swap_sim, items)]
+        return [_run_swap_sim(s) for s in items]
+
+    def _build_and_sim(candidate_pairs, base_fleet_now):
+        """Build variants for candidate_pairs against base_fleet_now and
+        simulate them (in parallel). Returns [(idx, ship, target, variant,
+        val), ...] preserving the input order."""
+        built = []
+        for _idx, _ship in candidate_pairs:
+            _target = sensitivity[_ship]["redistributed_to"]
+            _variant = _swap_variant(base_fleet_now, _ship, _target, base_fleet)
+            if not _variant or sum(_variant.values()) <= 0:
+                continue
+            _variant = _enforce_swap_budget(_variant, base_fleet, budget)
+            if not _variant or sum(_variant.values()) <= 0:
+                continue
+            built.append((_idx, _ship, _target, _variant))
+        vals = _sim_batch(built)
+        return [entry + (val,) for entry, val in zip(built, vals)]
+
+    # Phase C: greedy application. When a swap is ACCEPTED the incumbent
+    # fleet changes, so every REMAINING candidate's variant is stale - we
+    # rebuild and re-simulate the remainder against the updated fleet (as
+    # its own parallel batch). Rejections keep their precomputed result.
+    # This preserves the historical sequential-chain semantics exactly,
+    # while the common zero-accept case pays a single parallel batch.
+    _pending_pairs = [(idx, ship) for (idx, ship, _t, _v) in candidates_with_variants]
+    work = [entry for entry in _build_and_sim(_pending_pairs, cur_fleet)]
+    i = 0
+    while i < len(work):
+        if time.time() - t_start > _SWAP_TIME_BUDGET_S:
+            _log.info("  Swap pass: %.0fs time cap reached - skipping %d remaining candidate(s)",
+                      _SWAP_TIME_BUDGET_S, len(work) - i)
+            break
+        if cur_loss <= 0:
+            break  # a zero-loss incumbent cannot be improved
+        idx, ship, target, variant, val = work[i]
         pen = resource_preference_penalty(variant, resource_weights, preference_beta)
         eff_loss = float(val.get("mean_attacker_loss", float("inf"))) * loss_scale + pen
         cand_wp = float(val.get("win_probability", 0.0))
@@ -851,10 +931,14 @@ def _greedy_swap_refine(
                       ship, target, delta_pct)
             cur_fleet, cur_loss, cur_wp = variant, eff_loss, cand_wp
             accepted += 1
-        else:
-            _log.info("  --- Phase C: swap %s->%s validated %+.1f%% rejected "
-                      "(need >%.0f%% improvement, win not worse) ---",
-                      ship, target, delta_pct, _SWAP_ACCEPT_PCT)
+            # Acceptance changed the incumbent: rebuild + re-simulate the
+            # remaining candidates against the updated fleet.
+            _remaining = [(_idx2, _ship2) for (_idx2, _ship2, _t2, _v2, _val2) in work[i + 1:]]
+            work = _build_and_sim(_remaining, cur_fleet)
+            i = 0
+            continue
+        i += 1
+
     _log.info("  Swap pass: %d accepted, loss %.0f -> %.0f",
               accepted, incumbent_loss, cur_loss)
     return cur_fleet, cur_loss, cur_wp, accepted

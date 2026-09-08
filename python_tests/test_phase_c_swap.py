@@ -171,25 +171,34 @@ def test_greedy_pass_accepts_then_chains_against_updated_fleet(monkeypatch):
         "battleship": {"impact_pct": -40.0, "redistributed_to": "reaper"},
         "cruiser": {"impact_pct": -20.0, "redistributed_to": "reaper"},
     }
-    # Call 1: BS swap validates -50%  -> ACCEPTED.
-    # Call 2: cruiser swap vs the UPDATED fleet validates -4% -> rejected
-    # by the >5% gate (loss 48 vs the accepted 50).
+    # Parallel-batch swap pass call pattern:
+    # Call 1 (prebatch, promise order): BS swap validates -50% -> ACCEPTED.
+    # Call 2 (prebatch): cruiser swap vs the ORIGINAL fleet (result is
+    #   discarded - the acceptance above invalidated it).
+    # Call 3 (rebuild batch): cruiser swap RE-BUILT vs the UPDATED fleet
+    #   (battleship already gone) validates -4% -> rejected by the >5% gate
+    #   (loss 48 vs the accepted 50).
     out_fleet, out_loss, out_wp, n_acc, rec = _run_pass(
         monkeypatch,
         results=[
-            {"mean_attacker_loss": 50.0, "win_probability": 1.0},
-            {"mean_attacker_loss": 48.0, "win_probability": 1.0},
+            {"mean_attacker_loss": 50.0, "win_probability": 1.0},   # prebatch BS -> ACCEPT
+            {"mean_attacker_loss": 60.0, "win_probability": 1.0},   # prebatch cruiser (stale, unused)
+            {"mean_attacker_loss": 48.0, "win_probability": 1.0},   # rebuilt cruiser vs updated fleet -> reject
         ],
         sensitivity=sensitivity,
     )
     assert n_acc == 1
-    # Candidates ran largest-promise-first: battleship first.
+    # Prebatch ran largest-promise-first: battleship swap first.
     assert "battleship" not in rec.calls[0]
-    # The second candidate was built from the UPDATED fleet: battleship
-    # is already gone there.
-    assert "battleship" not in rec.calls[1]
-    assert "cruiser" not in rec.calls[1]
-    assert len(rec.calls) == 2
+    # The stale prebatch cruiser variant was still built from the ORIGINAL
+    # fleet, so battleship is present there.
+    assert "battleship" in rec.calls[1]
+    # After the acceptance, the remaining candidate was RE-BUILT from the
+    # UPDATED fleet: battleship AND cruiser are gone there (cruiser swapped
+    # out into reapers).
+    assert "battleship" not in rec.calls[2]
+    assert "cruiser" not in rec.calls[2]
+    assert len(rec.calls) == 3
     # Final fleet = updated fleet after the accepted swap (cruiser kept).
     assert "battleship" not in out_fleet
     assert out_fleet["cruiser"] == 50
