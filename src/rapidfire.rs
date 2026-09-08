@@ -175,12 +175,10 @@ pub fn rapidfire(shooter: ShipType, target: UnitType) -> Option<u32> {
         // Note: BC was previously coded as 250 (assumed "modern") but
         // Fandom confirms it has remained at 15 in modern OGame. The 250
         // value was likely a balance change that was reverted.
-        // Recycler=250 (official: DS infobox + body table + Recycler page)
-        // is NOT modeled here: Recycler is the one Python-only civil ship;
-        // combat.py strips it before Rust routing (see _RUST_UNKNOWN_SHIPS).
         (ShipType::Deathstar, UnitType::Ship(ShipType::EspionageProbe)) => 1_250,
         (ShipType::Deathstar, UnitType::Ship(ShipType::SolarSatellite)) => 1_250,
         (ShipType::Deathstar, UnitType::Ship(ShipType::Crawler)) => 1_250,
+        (ShipType::Deathstar, UnitType::Ship(ShipType::Recycler)) => 250,  // official: DS infobox + Recycler page
         (ShipType::Deathstar, UnitType::Ship(ShipType::LightFighter)) => 200,
         (ShipType::Deathstar, UnitType::Ship(ShipType::HeavyFighter)) => 100,
         (ShipType::Deathstar, UnitType::Ship(ShipType::Cruiser)) => 33,
@@ -543,8 +541,10 @@ mod tests {
             rapidfire(ShipType::Deathstar, UnitType::Ship(ShipType::Reaper)),
             Some(10)  // official: Fandom Reaper page + DS infobox (2:1 vs stale DS body table)
         );
-        // (Deathstar, Recycler) = 250 official, but Recycler is Python-only
-        // (no ShipType variant) — the row lives in fast_combat.py RAPIDFIRE.
+        assert_eq!(
+            rapidfire(ShipType::Deathstar, UnitType::Ship(ShipType::Recycler)),
+            Some(250)  // official: DS infobox + Recycler page
+        );
         assert_eq!(
             rapidfire(ShipType::Deathstar, UnitType::Ship(ShipType::Bomber)),
             Some(25)

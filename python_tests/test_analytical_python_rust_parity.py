@@ -76,6 +76,9 @@ CASES = [
     ("ds_vs_ds", {"deathstar": 3}, {"deathstar": 2}, {}, T, T),
     ("gauss_wall", {"battlecruiser": 300, "battleship": 300}, {},
      {"gauss_cannon": 3000, "plasma_turret": 300, "light_laser": 10000}, T, T),
+    ("ds_vs_recycler", {"deathstar": 5}, {"recycler": 50000}, {}, T, T),
+    ("recycler_mix", {"light_fighter": 3000, "recycler": 400},
+     {"cruiser": 300, "recycler": 50}, {}, T, T),
 ]
 
 SIM_KEYS = ("winner", "rounds_fought", "attacker_survivors",
@@ -83,7 +86,7 @@ SIM_KEYS = ("winner", "rounds_fought", "attacker_survivors",
             "debris_metal", "debris_crystal")
 
 BATCH_CASES = ["lf_duel", "heavy_mix", "defense_stack",
-               "bomber_vs_defenses", "mini_user_scenario"]
+               "bomber_vs_defenses", "mini_user_scenario", "recycler_mix"]
 
 
 def _case(name):
@@ -139,15 +142,24 @@ def test_delegation_determinism():
     assert via_public == via_rust
 
 
-def test_recycler_fallback():
-    """Recycler has no Rust combat model: the delegation guard must route
-    recycler fleets to the pure-Python path (bit-identical to calling it
-    directly)."""
-    atk = {"light_fighter": 800, "recycler": 60}
-    dfd = {"cruiser": 150}
+def test_recycler_exact():
+    """Recycler is a full Rust citizen: recycler fleets resolve
+    bit-identically through the Rust engine, including the Deathstar
+    RF-250 spike path, and the delegation covers them (no fallback)."""
+    atk = {"deathstar": 3, "light_fighter": 800, "recycler": 60}
+    dfd = {"cruiser": 150, "recycler": 2000}
+    for seed in range(5):
+        p = simulate_combat_fast(atk, dfd, {}, T, T, seed=seed)
+        r = og.simulate_analytical_combat_py(atk, dfd, {}, T, T, seed)
+        for k in SIM_KEYS:
+            assert p[k] == r[k], (
+                f"recycler seed={seed} {k}: py={p[k]} rust={r[k]}"
+            )
     via_public = simulate_batch_fast(atk, dfd, {}, T, T, 30, 55,
-                                     0.30, False, False)
+                                     0.30, True, False)
     via_python = _simulate_batch_fast_python(atk, dfd, {}, T, T, 30, 55,
-                                             0.30, False, False)
-    assert via_public == via_python
+                                             0.30, True, False)
+    via_rust = og.simulate_analytical_batch_py(atk, dfd, {}, T, T, 30, 55,
+                                               0.30, True, False)
+    assert via_public == via_rust == via_python
     assert via_public["sims_run"] == 30

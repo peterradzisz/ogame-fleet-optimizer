@@ -130,17 +130,6 @@ _SHIP_TOTAL_COST: dict[str, int] = {
 }
 
 
-# Pathfinder, Solar Satellite, Crawler now in Rust ShipType enum
-# Only Recycler remains Python-only (civil ship, not commonly used in combat)
-_RUST_UNKNOWN_SHIPS = {"recycler", "Recycler"}
-
-
-def _strip_unknown_for_rust(fleet):
-    """Remove only recycler (the one remaining Python-only ship).
-    Truly unknown ships pass through so Rust raises a clear ValueError."""
-    return {k: v for k, v in (fleet or {}).items() if k not in _RUST_UNKNOWN_SHIPS}
-
-
 def _to_tech_tuple(tech) -> tuple:
     return tuple(tech)
 
@@ -174,8 +163,8 @@ def simulate_combat(
     if should_use_fast(attacker, defender, defender_defenses):
         return simulate_combat_fast(attacker, defender, defender_defenses, attacker_tech, defender_tech, int(seed))
     return _translate_result(_rust.simulate_combat_py(
-        _normalize_ship_keys(_strip_unknown_for_rust(attacker)),
-        _normalize_ship_keys(_strip_unknown_for_rust(defender)),
+        _normalize_ship_keys(attacker),
+        _normalize_ship_keys(defender),
         _normalize_defense_keys(defender_defenses),
         _to_tech_tuple(attacker_tech),
         _to_tech_tuple(defender_tech),
@@ -215,8 +204,8 @@ def simulate_batch(
         fast = simulate_batch_fast(attacker, defender, defender_defenses, attacker_tech, defender_tech, int(n_sims), int(base_seed), debris_pct=debris_pct, deuterium_in_debris=deuterium_in_debris, want_attribution=True)
         return fast
     result = _translate_result(_rust.simulate_batch_py(
-        _normalize_ship_keys(_strip_unknown_for_rust(attacker)),
-        _normalize_ship_keys(_strip_unknown_for_rust(defender)),
+        _normalize_ship_keys(attacker),
+        _normalize_ship_keys(defender),
         _normalize_defense_keys(defender_defenses),
         _to_tech_tuple(attacker_tech),
         _to_tech_tuple(defender_tech),
@@ -236,8 +225,8 @@ def simulate_batch(
     from collections import defaultdict
     try:
         from ogame_optimizer.core.fast_combat import calculate_debris
-        _stripped_a = _strip_unknown_for_rust(attacker)
-        _stripped_d = _strip_unknown_for_rust(defender)
+        _stripped_a = attacker
+        _stripped_d = defender
         # Cap K for performance: enough to be stable, cheap enough not to
         # dominate the cost of the call (the batch itself does the heavy
         # lifting in Rust). 50 is the same cap the fast path uses
@@ -256,8 +245,8 @@ def simulate_batch(
         )
         for k in range(K):
             detail = _translate_result(_rust.simulate_combat_py(
-                _normalize_ship_keys(_strip_unknown_for_rust(attacker)),
-                _normalize_ship_keys(_strip_unknown_for_rust(defender)),
+                _normalize_ship_keys(attacker),
+                _normalize_ship_keys(defender),
                 _normalize_defense_keys(defender_defenses),
                 _to_tech_tuple(attacker_tech),
                 _to_tech_tuple(defender_tech),
@@ -323,7 +312,7 @@ def evaluate_population(
     if any(should_use_fast(f, defender, defender_defenses) for f in attacker_fleets):
         return evaluate_population_fast(attacker_fleets, defender, defender_defenses, attacker_tech, defender_tech, int(n_sims_per_fleet), int(base_seed))
     raw_results = _rust.evaluate_population_py(
-        [_normalize_ship_keys(_strip_unknown_for_rust(f)) for f in attacker_fleets],
+        [_normalize_ship_keys(f) for f in attacker_fleets],
         _normalize_ship_keys(defender),
         _normalize_defense_keys(defender_defenses),
         _to_tech_tuple(attacker_tech),

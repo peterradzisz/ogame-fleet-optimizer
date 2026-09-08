@@ -55,6 +55,7 @@ pub fn parse_ship_pascal(name: &str) -> Option<ShipType> {
         "Pathfinder" => ShipType::Pathfinder,
         "SolarSatellite" => ShipType::SolarSatellite,
         "Crawler" => ShipType::Crawler,
+        "Recycler" => ShipType::Recycler,
         _ => return None,
     })
 }
@@ -101,9 +102,8 @@ fn load() -> AnalyticalTables {
     if let Some(obj) = parsed.get("ship_stats_pascal").and_then(|v| v.as_object()) {
         for (k, v) in obj {
             let Some(ship) = parse_ship_pascal(k) else {
-                // Recycler (and any future Python-only civil ships) have no
-                // Rust ShipType. Skip silently; load() only iterates entries
-                // it can map.
+                // Any future Python-only civil ships have no Rust
+                // ShipType. Skip silently.
                 continue;
             };
             ship_stats.insert(
@@ -150,9 +150,8 @@ fn load() -> AnalyticalTables {
             } else if let Some(d) = parse_defense_pascal(b) {
                 UnitType::Defense(d)
             } else {
-                // Recycler and any other Python-only civil ships have no
-                // Rust UnitType. Skip silently - RF entries targeting them
-                // are never used in the analytical resolver.
+                // Any future Python-only civil ships have no Rust
+                // UnitType; skip their RF entries.
                 continue;
             };
             rapidfire.entry(shooter).or_default().insert(target, rf);
@@ -163,7 +162,7 @@ fn load() -> AnalyticalTables {
     if let Some(obj) = parsed.get("ship_costs_mcd_pascal").and_then(|v| v.as_object()) {
         for (k, v) in obj {
             let Some(ship) = parse_ship_pascal(k) else {
-                continue;  // Recycler etc. - skip
+                continue;  // unknown ship - skip
             };
             let arr = v.as_array().expect("cost must be array");
             ship_costs.insert(

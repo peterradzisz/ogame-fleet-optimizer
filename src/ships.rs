@@ -1,7 +1,7 @@
 //! OGame ship and defense data module.
 //!
-//! This module contains the verified base stats for 15 ship types
-//! (12 classic + Reaper + Pathfinder + Solar Satellite + Crawler)
+//! This module contains the verified base stats for 16 ship types
+//! (12 classic + Recycler + Reaper + Pathfinder + Solar Satellite + Crawler)
 //! and 8 defense structures required for modern OGame combat simulation.
 //!
 //! # Sources
@@ -60,6 +60,7 @@ pub enum ShipType {
     Pathfinder,
     SolarSatellite,
     Crawler,
+    Recycler,
 }
 
 impl ShipType {
@@ -82,6 +83,7 @@ impl ShipType {
             ShipType::Pathfinder => "Pathfinder",
             ShipType::SolarSatellite => "SolarSatellite",
             ShipType::Crawler => "Crawler",
+            ShipType::Recycler => "Recycler",
         }
     }
 
@@ -102,6 +104,7 @@ impl ShipType {
         ShipType::Pathfinder,
         ShipType::SolarSatellite,
         ShipType::Crawler,
+        ShipType::Recycler,
     ];
 }
 
@@ -190,6 +193,17 @@ pub fn ship_stats(ship: ShipType) -> ShipStats {
             speed: 5_000,
             cargo: 5_000,
             fuel: 10,
+        },
+        ShipType::Recycler => ShipStats {
+            cost_metal: 10_000,
+            cost_crystal: 6_000,
+            cost_deuterium: 2_000,
+            base_attack: 1,
+            base_shield: 10,
+            base_armor: 1_600, // structure 16,000 / 10
+            speed: 2_000,
+            cargo: 20_000,
+            fuel: 300,
         },
         ShipType::LargeCargo => ShipStats {
             cost_metal: 6_000,

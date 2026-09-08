@@ -862,23 +862,17 @@ def simulate_batch_fast(
     """Run N analytical sims and return aggregate stats (same format as Rust batch).
 
     Delegates to the Rust analytical core (``_ogame_combat``) when built:
-    statistically identical math (verified by
+    bit-identical math incl. recycler (verified by
     ``python_tests/test_analytical_python_rust_parity.py``), ~35x faster
-    per sim, rayon-parallel across sims with the GIL released. Fleets
-    containing recycler (Python-only ship, no Rust combat model) and
-    stale wheels without the analytical batch fall back to the
-    pure-Python implementation below.
+    per sim, rayon-parallel across sims with the GIL released. Stale
+    wheels without the analytical batch fall back to the pure-Python
+    implementation below.
     """
     try:
         from ogame_optimizer import _ogame_combat as _an
     except ImportError:
         _an = None
-    if (
-        _an is not None
-        and hasattr(_an, "simulate_analytical_batch_py")
-        and "recycler" not in attacker
-        and "recycler" not in defender
-    ):
+    if _an is not None and hasattr(_an, "simulate_analytical_batch_py"):
         return _an.simulate_analytical_batch_py(
             attacker,
             defender,

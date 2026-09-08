@@ -572,8 +572,6 @@ fn simulate_combat_internal(
     (winner.to_string(), rounds_fought, atk_surv, def_ship_surv, def_def_surv)
 }
 
-/// Python fleet dicts use snake_case keys (recycler has no Rust combat
-/// model and is skipped, mirroring the fixture loader).
 fn snake_to_ship(s: &str) -> Option<crate::ships::ShipType> {
     use crate::ships::ShipType as S;
     Some(match s {
@@ -592,6 +590,7 @@ fn snake_to_ship(s: &str) -> Option<crate::ships::ShipType> {
         "pathfinder" => S::Pathfinder,
         "solar_satellite" => S::SolarSatellite,
         "crawler" => S::Crawler,
+        "recycler" => S::Recycler,
         _ => return None,
     })
 }
@@ -629,6 +628,7 @@ fn ship_to_snake(s: crate::ships::ShipType) -> &'static str {
         S::Pathfinder => "pathfinder",
         S::SolarSatellite => "solar_satellite",
         S::Crawler => "crawler",
+        S::Recycler => "recycler",
     }
 }
 

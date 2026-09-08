@@ -25,7 +25,7 @@ except ImportError:
         pytest.skip("Rust combat extension not built", allow_module_level=True)
 
 from ogame_optimizer.core.combat import (
-    _normalize_ship_keys, _strip_unknown_for_rust,
+    _normalize_ship_keys,
     _normalize_defense_keys, _to_tech_tuple,
 )
 from ogame_optimizer.core.fast_combat import simulate_batch_fast
@@ -36,8 +36,8 @@ UC = {k: sum(v) for k, v in SHIPS_COST.items()}
 
 def _rust_loss(fleet, enemy, n_sims):
     r = _ogame_combat.simulate_batch_py(
-        _normalize_ship_keys(_strip_unknown_for_rust(fleet)),
-        _normalize_ship_keys(_strip_unknown_for_rust(enemy)),
+        _normalize_ship_keys(fleet),
+        _normalize_ship_keys(enemy),
         _normalize_defense_keys({}),
         _to_tech_tuple((0, 0, 0)), _to_tech_tuple((0, 0, 0)),
         n_sims, 42,
@@ -126,8 +126,8 @@ def test_lf_swarm_cannot_damage_deathstar():
     enemy = {"deathstar": 1}
     fleet = {"light_fighter": 2500}
     rr = _ogame_combat.simulate_batch_py(
-        _normalize_ship_keys(_strip_unknown_for_rust(fleet)),
-        _normalize_ship_keys(_strip_unknown_for_rust(enemy)),
+        _normalize_ship_keys(fleet),
+        _normalize_ship_keys(enemy),
         _normalize_defense_keys({}),
         _to_tech_tuple((0, 0, 0)), _to_tech_tuple((0, 0, 0)), 20, 42,
     )
