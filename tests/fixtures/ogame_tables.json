@@ -1,0 +1,603 @@
+{
+  "defense_costs_mcd_pascal": {
+    "GaussCannon": [
+      20000,
+      15000,
+      2000
+    ],
+    "HeavyLaser": [
+      6000,
+      2000,
+      0
+    ],
+    "IonCannon": [
+      5000,
+      3000,
+      0
+    ],
+    "LargeShieldDome": [
+      50000,
+      50000,
+      0
+    ],
+    "LightLaser": [
+      1500,
+      500,
+      0
+    ],
+    "PlasmaTurret": [
+      50000,
+      50000,
+      30000
+    ],
+    "RocketLauncher": [
+      2000,
+      0,
+      0
+    ],
+    "SmallShieldDome": [
+      10000,
+      10000,
+      0
+    ]
+  },
+  "defense_stats_pascal": {
+    "GaussCannon": {
+      "atk": 1100,
+      "hull": 3500,
+      "shield": 200
+    },
+    "HeavyLaser": {
+      "atk": 250,
+      "hull": 800,
+      "shield": 100
+    },
+    "IonCannon": {
+      "atk": 150,
+      "hull": 800,
+      "shield": 500
+    },
+    "LargeShieldDome": {
+      "atk": 0,
+      "hull": 10000,
+      "shield": 10000
+    },
+    "LightLaser": {
+      "atk": 100,
+      "hull": 200,
+      "shield": 25
+    },
+    "PlasmaTurret": {
+      "atk": 3000,
+      "hull": 10000,
+      "shield": 300
+    },
+    "RocketLauncher": {
+      "atk": 80,
+      "hull": 200,
+      "shield": 20
+    },
+    "SmallShieldDome": {
+      "atk": 0,
+      "hull": 2000,
+      "shield": 2000
+    }
+  },
+  "rapidfire_pascal": [
+    [
+      "LightFighter",
+      "EspionageProbe",
+      5
+    ],
+    [
+      "LightFighter",
+      "SolarSatellite",
+      5
+    ],
+    [
+      "LightFighter",
+      "Crawler",
+      5
+    ],
+    [
+      "HeavyFighter",
+      "SmallCargo",
+      3
+    ],
+    [
+      "HeavyFighter",
+      "EspionageProbe",
+      5
+    ],
+    [
+      "HeavyFighter",
+      "SolarSatellite",
+      5
+    ],
+    [
+      "HeavyFighter",
+      "Crawler",
+      5
+    ],
+    [
+      "Cruiser",
+      "LightFighter",
+      6
+    ],
+    [
+      "Cruiser",
+      "EspionageProbe",
+      5
+    ],
+    [
+      "Cruiser",
+      "SolarSatellite",
+      5
+    ],
+    [
+      "Cruiser",
+      "Crawler",
+      5
+    ],
+    [
+      "Cruiser",
+      "RocketLauncher",
+      10
+    ],
+    [
+      "Battleship",
+      "EspionageProbe",
+      5
+    ],
+    [
+      "Battleship",
+      "SolarSatellite",
+      5
+    ],
+    [
+      "Battleship",
+      "Crawler",
+      5
+    ],
+    [
+      "Battleship",
+      "Pathfinder",
+      5
+    ],
+    [
+      "Battlecruiser",
+      "EspionageProbe",
+      5
+    ],
+    [
+      "Battlecruiser",
+      "SolarSatellite",
+      5
+    ],
+    [
+      "Battlecruiser",
+      "Crawler",
+      5
+    ],
+    [
+      "Battlecruiser",
+      "SmallCargo",
+      3
+    ],
+    [
+      "Battlecruiser",
+      "LargeCargo",
+      3
+    ],
+    [
+      "Battlecruiser",
+      "HeavyFighter",
+      4
+    ],
+    [
+      "Battlecruiser",
+      "Cruiser",
+      4
+    ],
+    [
+      "Battlecruiser",
+      "Battleship",
+      7
+    ],
+    [
+      "Bomber",
+      "EspionageProbe",
+      5
+    ],
+    [
+      "Bomber",
+      "SolarSatellite",
+      5
+    ],
+    [
+      "Bomber",
+      "Crawler",
+      5
+    ],
+    [
+      "Bomber",
+      "RocketLauncher",
+      20
+    ],
+    [
+      "Bomber",
+      "LightLaser",
+      20
+    ],
+    [
+      "Bomber",
+      "HeavyLaser",
+      10
+    ],
+    [
+      "Bomber",
+      "IonCannon",
+      10
+    ],
+    [
+      "Bomber",
+      "GaussCannon",
+      5
+    ],
+    [
+      "Bomber",
+      "PlasmaTurret",
+      5
+    ],
+    [
+      "Destroyer",
+      "EspionageProbe",
+      5
+    ],
+    [
+      "Destroyer",
+      "SolarSatellite",
+      5
+    ],
+    [
+      "Destroyer",
+      "Crawler",
+      5
+    ],
+    [
+      "Destroyer",
+      "Battlecruiser",
+      2
+    ],
+    [
+      "Destroyer",
+      "LightLaser",
+      10
+    ],
+    [
+      "Reaper",
+      "EspionageProbe",
+      5
+    ],
+    [
+      "Reaper",
+      "SolarSatellite",
+      5
+    ],
+    [
+      "Reaper",
+      "Crawler",
+      5
+    ],
+    [
+      "Reaper",
+      "Battleship",
+      7
+    ],
+    [
+      "Reaper",
+      "Bomber",
+      4
+    ],
+    [
+      "Reaper",
+      "Destroyer",
+      3
+    ],
+    [
+      "Pathfinder",
+      "EspionageProbe",
+      5
+    ],
+    [
+      "Pathfinder",
+      "SolarSatellite",
+      5
+    ],
+    [
+      "Pathfinder",
+      "Crawler",
+      5
+    ],
+    [
+      "Pathfinder",
+      "LightFighter",
+      3
+    ],
+    [
+      "Pathfinder",
+      "HeavyFighter",
+      2
+    ],
+    [
+      "Pathfinder",
+      "Cruiser",
+      3
+    ],
+    [
+      "Deathstar",
+      "EspionageProbe",
+      1250
+    ],
+    [
+      "Deathstar",
+      "SolarSatellite",
+      1250
+    ],
+    [
+      "Deathstar",
+      "Crawler",
+      1250
+    ],
+    [
+      "Deathstar",
+      "LightFighter",
+      200
+    ],
+    [
+      "Deathstar",
+      "HeavyFighter",
+      100
+    ],
+    [
+      "Deathstar",
+      "Cruiser",
+      33
+    ],
+    [
+      "Deathstar",
+      "Battleship",
+      30
+    ],
+    [
+      "Deathstar",
+      "Battlecruiser",
+      15
+    ],
+    [
+      "Deathstar",
+      "Pathfinder",
+      30
+    ],
+    [
+      "Deathstar",
+      "Reaper",
+      10
+    ],
+    [
+      "Deathstar",
+      "Bomber",
+      25
+    ],
+    [
+      "Deathstar",
+      "Destroyer",
+      5
+    ],
+    [
+      "Deathstar",
+      "SmallCargo",
+      250
+    ],
+    [
+      "Deathstar",
+      "LargeCargo",
+      250
+    ],
+    [
+      "Deathstar",
+      "Recycler",
+      250
+    ],
+    [
+      "Deathstar",
+      "RocketLauncher",
+      200
+    ],
+    [
+      "Deathstar",
+      "LightLaser",
+      200
+    ],
+    [
+      "Deathstar",
+      "HeavyLaser",
+      100
+    ],
+    [
+      "Deathstar",
+      "IonCannon",
+      100
+    ],
+    [
+      "Deathstar",
+      "GaussCannon",
+      50
+    ]
+  ],
+  "ship_costs_mcd_pascal": {
+    "Battlecruiser": [
+      30000,
+      40000,
+      15000
+    ],
+    "Battleship": [
+      45000,
+      15000,
+      0
+    ],
+    "Bomber": [
+      50000,
+      25000,
+      15000
+    ],
+    "Crawler": [
+      2000,
+      2000,
+      1000
+    ],
+    "Cruiser": [
+      20000,
+      7000,
+      2000
+    ],
+    "Deathstar": [
+      5000000,
+      4000000,
+      1000000
+    ],
+    "Destroyer": [
+      60000,
+      50000,
+      15000
+    ],
+    "EspionageProbe": [
+      0,
+      1000,
+      0
+    ],
+    "HeavyFighter": [
+      6000,
+      4000,
+      0
+    ],
+    "LargeCargo": [
+      6000,
+      6000,
+      0
+    ],
+    "LightFighter": [
+      3000,
+      1000,
+      0
+    ],
+    "Pathfinder": [
+      8000,
+      15000,
+      8000
+    ],
+    "Reaper": [
+      85000,
+      55000,
+      20000
+    ],
+    "Recycler": [
+      10000,
+      6000,
+      2000
+    ],
+    "SmallCargo": [
+      2000,
+      2000,
+      0
+    ],
+    "SolarSatellite": [
+      0,
+      2000,
+      500
+    ]
+  },
+  "ship_stats_pascal": {
+    "Battlecruiser": {
+      "atk": 700,
+      "hull": 7000,
+      "shield": 400
+    },
+    "Battleship": {
+      "atk": 1000,
+      "hull": 6000,
+      "shield": 200
+    },
+    "Bomber": {
+      "atk": 1000,
+      "hull": 7500,
+      "shield": 500
+    },
+    "Crawler": {
+      "atk": 1,
+      "hull": 400,
+      "shield": 1
+    },
+    "Cruiser": {
+      "atk": 400,
+      "hull": 2700,
+      "shield": 50
+    },
+    "Deathstar": {
+      "atk": 200000,
+      "hull": 900000,
+      "shield": 50000
+    },
+    "Destroyer": {
+      "atk": 2000,
+      "hull": 11000,
+      "shield": 500
+    },
+    "EspionageProbe": {
+      "atk": 1,
+      "hull": 100,
+      "shield": 0
+    },
+    "HeavyFighter": {
+      "atk": 150,
+      "hull": 1000,
+      "shield": 25
+    },
+    "LargeCargo": {
+      "atk": 5,
+      "hull": 1200,
+      "shield": 25
+    },
+    "LightFighter": {
+      "atk": 50,
+      "hull": 400,
+      "shield": 10
+    },
+    "Pathfinder": {
+      "atk": 200,
+      "hull": 2300,
+      "shield": 100
+    },
+    "Reaper": {
+      "atk": 2800,
+      "hull": 14000,
+      "shield": 700
+    },
+    "Recycler": {
+      "atk": 1,
+      "hull": 1600,
+      "shield": 10
+    },
+    "SmallCargo": {
+      "atk": 5,
+      "hull": 400,
+      "shield": 10
+    },
+    "SolarSatellite": {
+      "atk": 1,
+      "hull": 200,
+      "shield": 1
+    }
+  },
+  "version": 1
+}

@@ -1,3 +1,5 @@
+pub mod analytical;
+pub mod analytical_tables;
 pub mod combat;
 pub mod rapidfire;
 pub mod ships;
@@ -368,5 +370,9 @@ fn _ogame_combat(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(simulate_combat_py, m)?)?;
     m.add_function(wrap_pyfunction!(simulate_batch_py, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_population_py, m)?)?;
+    m.add_function(wrap_pyfunction!(analytical::simulate_analytical_combat_py, m)?)?;
+    m.add_function(wrap_pyfunction!(analytical::simulate_analytical_batch_py, m)?)?;
+    // Phase 0: touch the table loader once so import-time drift is loud, not silent.
+    analytical::verify_tables_on_startup();
     Ok(())
 }
