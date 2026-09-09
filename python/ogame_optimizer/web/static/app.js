@@ -139,6 +139,11 @@
         optimization_target: (document.getElementById('optimization_target')||{value:'maximize_profit'}).value || 'maximize_profit',
         min_gain_pct: parseFloat((document.getElementById('min_gain_pct')||{value:'0'}).value || '0'),
         hyperspace_tech: parseInt((document.getElementById('hyperspace_tech')||{value:'0'}).value || '0'),
+        drive_techs: {
+          combustion: parseInt(fd.get("drive_combustion") || "16"),
+          impulse: parseInt(fd.get("drive_impulse") || "14"),
+          hyperspace: parseInt(fd.get("drive_hyperspace") || "12"),
+        },
         collector_class: document.getElementById('collector_class') ? document.getElementById('collector_class').checked : false,
         resource_weights: [
           parseFloat((document.getElementById('weight_m')||{value:'1.0'}).value || '1.0'),

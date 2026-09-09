@@ -41,6 +41,13 @@ class TechLevelsSchema(BaseModel):
     armor: int = Field(default=0, ge=0)
 
 
+class DriveTechs(BaseModel):
+    """Attacker drive tech levels for the fuel/speed penalty derivation."""
+    combustion: int = Field(16, ge=0, le=30)
+    impulse: int = Field(14, ge=0, le=30)
+    hyperspace: int = Field(12, ge=0, le=30)
+
+
 class OptimizeRequest(BaseModel):
     enemy_fleet: ShipCounts
     enemy_defenses: DefenseCounts = Field(default_factory=DefenseCounts)
@@ -84,12 +91,13 @@ class OptimizeRequest(BaseModel):
     # (primary optimisation result is unaffected either way).
     include_alternatives: bool = True
     # Fuel / speed penalty slider (0-10). 0 disables (default, backward
-    # compatible). Higher values bias the optimizer away from slow /
-    # deuterium-expensive ships (Destroyer, Reaper, Bomber, Deathstar) and
-    # toward cheap+fast ships (LF, HF, Cruiser, BC). Reference ship:
-    # Battlecruiser (factor 1.00). See fleet_penalty_multiplier for the
-    # table. 5 = moderate bias, 10 = strong bias.
+    # compatible). Higher values bias the optimizer away from ships that
+    # are slower / more deuterium-expensive than the Battlecruiser
+    # reference at the given drive techs. 5 = moderate, 10 = strong.
     fuel_speed_penalty_pct: float = 0.0
+    # Attacker drive tech levels: per-ship penalty factors are derived
+    # from effective speeds (incl. drive switches). None -> 16/14/12.
+    drive_techs: Optional[DriveTechs] = None
     # When True (default), sensitivity-analysis sims may run at a validated
     # 1/10 or 1/100 scale-down for speed on big scenarios. Final validation
     # and all GA rounds always run at full scale. False forces full scale

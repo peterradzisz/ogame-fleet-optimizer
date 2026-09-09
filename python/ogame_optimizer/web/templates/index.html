@@ -129,6 +129,9 @@ Large Shield Dome / 1"></textarea>
         <label>Weapon<input type="number" name="attacker_weapon" min="0" value="0"></label>
         <label>Shield<input type="number" name="attacker_shield" min="0" value="0"></label>
         <label>Armor<input type="number" name="attacker_armor" min="0" value="0"></label>
+        <label>Comb. Drive<input type="number" name="drive_combustion" min="0" max="30" value="16" title="Combustion Drive level (fuel/speed penalty)"></label>
+        <label>Imp. Drive<input type="number" name="drive_impulse" min="0" max="30" value="14" title="Impulse Drive level (fuel/speed penalty)"></label>
+        <label>Hyper. Drive<input type="number" name="drive_hyperspace" min="0" max="30" value="12" title="Hyperspace Drive level (fuel/speed penalty)"></label>
       </div>
       <div>
         <h3>Enemy Tech</h3>
@@ -377,5 +380,5 @@ Large Shield Dome / 1"></textarea>
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/app.js?v=20260908d"></script>
+<script src="/static/app.js?v=20260908e"></script>
 {% endblock %}

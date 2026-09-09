@@ -1386,6 +1386,9 @@ def optimize(
     # Reference ship: Battlecruiser (factor 1.00). See
     # ogame_optimizer.core.fleet.fleet_penalty_multiplier for the table.
     fuel_speed_penalty_pct: float = 0.0,
+    # Attacker drive tech levels {"combustion", "impulse", "hyperspace"}
+    # for the fuel/speed penalty derivation. None -> fleet.DEFAULT_DRIVE_TECHS.
+    drive_techs: Optional[Dict[str, int]] = None,
     # When True (default), sensitivity-analysis sims may run at a validated
     # 1/10 or 1/100 scale-down (progressive_seeds.validate_scale) for a big
     # speed-up on large scenarios. GA rounds and final validation always
@@ -1765,6 +1768,7 @@ def optimize(
             min_gain_pct=min_gain_pct,
             base_fleet=base_fleet,
             fuel_speed_penalty_pct=fuel_speed_penalty_pct,
+            drive_techs=drive_techs,
         )
 
         # Quick validate (merge base for combat)
@@ -1831,6 +1835,7 @@ def optimize(
             min_gain_pct=min_gain_pct,
             base_fleet=base_fleet,
             fuel_speed_penalty_pct=fuel_speed_penalty_pct,
+            drive_techs=drive_techs,
         )
 
         # Validate merged fleet (base + additions)

@@ -277,7 +277,7 @@ def test_alternatives_pairwise_diversity(alt_result):
 
 def test_ui_wiring_strings_alternatives(client):
     index = client.get("/").text
-    for needle in ("alt-pills", "include_alternatives", "v=20260908d"):
+    for needle in ("alt-pills", "include_alternatives", "v=20260908e"):
         assert needle in index, needle
     js = client.get("/static/app.js").text
     for needle in (

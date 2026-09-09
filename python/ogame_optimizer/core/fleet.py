@@ -314,7 +314,10 @@ __all__ = [
     "DEFENSES_COST",
     "SHIPS_COST",
     "SHIP_BASE_ATK",
-    "SHIP_FUEL_SPEED_PENALTY",
+    "SHIP_DRIVE_DATA",
+    "DEFAULT_DRIVE_TECHS",
+    "effective_ship_speed",
+    "derive_penalty_factors",
     "Fleet",
     "compute_budget",
     "fleet_value",
@@ -341,50 +344,106 @@ SHIP_BASE_ATK: Dict[str, int] = {
 
 
 # ---------------------------------------------------------------------------
-# Fuel / speed penalty map (engine adjustment per Session 5)
+# Fuel / speed penalty: drive-tech-aware (rework 2026-09-09)
 # ---------------------------------------------------------------------------
-# Per-ship base penalty factors used by fleet_penalty_multiplier.
-# Reference ship: Battlecruiser (penalty = 1.0, no adjustment).
-# Other ships get a multiplier >= 1.0 that biases the optimizer AWAY from
-# them when the user enables the fuel/speed penalty slider. Values below
-# represent the max-strength penalty (slider at 100%). The slider scales
-# linearly: pct=0 disables, pct=5 applies half the table, pct=10 full.
+# Effective speed = base speed x drive multiplier (Combustion +10%/lvl,
+# Impulse +20%/lvl, Hyperspace +30%/lvl). Three hulls switch drives at
+# thresholds: Small Cargo (Impulse 5), Bomber (Hyperspace 8), Recycler
+# (Impulse 17, then Hyperspace 15). Large Cargo never switches.
 #
-# Penalty sources:
-#   deathstar (10%): pathologically slow (base speed 100, lowest in game),
-#                    1M deuterium per ship vs 15k for BC, can't be massed.
-#   bomber    ( 7%): slow (4M base), expensive deuterium (15k), niche use.
-#   reaper    ( 5%): fast (7M base) but expensive deuterium (20k).
-#   destroyer ( 4%): slow (5M base), expensive deuterium (15k).
-#   battleship( 3%): very slow (5M base), no RF, but cheap and durable.
-#   bc, lf, hf, cruiser, cargo, probe: 1.0 (cheap+fast reference set).
-SHIP_FUEL_SPEED_PENALTY: Dict[str, float] = {
-    "deathstar":        1.10,
-    "bomber":           1.07,
-    "reaper":           1.05,
-    "destroyer":        1.04,
-    "battleship":       1.03,
-    "battlecruiser":    1.00,  # reference
-    "light_fighter":    1.00,
-    "heavy_fighter":    1.00,
-    "cruiser":          1.00,
-    "pathfinder":       1.00,
-    "small_cargo":      1.00,
-    "large_cargo":      1.00,
-    "espionage_probe":  1.00,
-    "recycler":         1.00,
+# Sources: OGame wiki "Base Speed" / "Ships" pages, retrieved 2026-09-09.
+# The wiki's "speed at minimum research" values are locked as drift
+# anchors in python_tests/test_fuel_speed_penalty.py:
+#   HF@ID2=14,000  PF@HD2=19,200  SC@ID5=20,000  Recycler@ID17=17,600
+#   Recycler@HD15=33,000  Bomber@HD8=17,000  Deathstar@HD7=310
+#
+# Penalty factors are DERIVED from the attacker's drive techs instead of
+# the old static table, fixing two of its errors: Battleship was listed
+# "very slow" although it flies at exactly Battlecruiser speed (same
+# 10,000 base, same Hyperspace drive - only its fuel is 2x), and Light
+# Fighter was treated as BC-fast although at typical techs it is 25-40%
+# slower (Combustion +10%/lvl cannot keep pace with Hyperspace +30%/lvl;
+# only very high Combustion closes the gap).
+
+DRIVE_MULT_PER_LEVEL = {"combustion": 0.10, "impulse": 0.20, "hyperspace": 0.30}
+
+# Used when a request carries no drive techs (API back-compat).
+DEFAULT_DRIVE_TECHS: Dict[str, int] = {"combustion": 16, "impulse": 14, "hyperspace": 12}
+
+# ship -> {"drive", "base" speed, "fuel" (deuterium), "switches"} where
+# switches are (drive, min_level, new_base, new_fuel) applied in order.
+SHIP_DRIVE_DATA: Dict[str, Dict] = {
+    "light_fighter":   {"drive": "combustion", "base": 12_500, "fuel": 20, "switches": []},
+    "heavy_fighter":   {"drive": "impulse",    "base": 10_000, "fuel": 75, "switches": []},
+    "cruiser":         {"drive": "impulse",    "base": 15_000, "fuel": 300, "switches": []},
+    "battleship":      {"drive": "hyperspace", "base": 10_000, "fuel": 500, "switches": []},
+    "battlecruiser":   {"drive": "hyperspace", "base": 10_000, "fuel": 250, "switches": []},
+    "bomber":          {"drive": "impulse",    "base": 4_000, "fuel": 700,
+                        "switches": [("hyperspace", 8, 5_000, 700)]},
+    "destroyer":       {"drive": "hyperspace", "base": 5_000, "fuel": 1000, "switches": []},
+    "deathstar":       {"drive": "hyperspace", "base": 100, "fuel": 1, "switches": []},
+    "reaper":          {"drive": "hyperspace", "base": 7_000, "fuel": 900, "switches": []},
+    "pathfinder":      {"drive": "hyperspace", "base": 12_000, "fuel": 300, "switches": []},
+    "small_cargo":     {"drive": "combustion", "base": 5_000, "fuel": 10,
+                        "switches": [("impulse", 5, 10_000, 20)]},
+    "large_cargo":     {"drive": "combustion", "base": 7_500, "fuel": 50, "switches": []},
+    "recycler":        {"drive": "combustion", "base": 2_000, "fuel": 300,
+                        "switches": [("impulse", 17, 4_000, 300),
+                                     ("hyperspace", 15, 6_000, 300)]},
+    "espionage_probe": {"drive": "combustion", "base": 100_000_000, "fuel": 1, "switches": []},
 }
+
+# Calibration: factor = 1 + ALPHA*log2(v_bc/v)+ + BETA*log2(fuel/fuel_bc)+
+# clamped to [1.0, _PENALTY_CAP]. At DEFAULT_DRIVE_TECHS this yields
+# roughly: deathstar 1.10, recycler 1.05, destroyer 1.04, bomber 1.03,
+# reaper 1.03, large_cargo 1.02, battleship 1.01, light_fighter 1.008,
+# heavy_fighter 1.004, cruiser/pathfinder 1.003, probe/BC 1.00.
+_PENALTY_ALPHA = 0.015  # per log2(x) slower than the BC reference
+_PENALTY_BETA = 0.012   # per log2(x) thirstier than the BC reference
+_PENALTY_CAP = 1.15
+
+
+def effective_ship_speed(drive_techs: Optional[Dict[str, int]] = None) -> Dict[str, float]:
+    """Effective speed per ship at the given drive techs (switches applied).
+
+    Unflyable units (solar satellite, crawler) are not in SHIP_DRIVE_DATA
+    and therefore not in the result.
+    """
+    dt = drive_techs or DEFAULT_DRIVE_TECHS
+    out: Dict[str, float] = {}
+    for ship, prof in SHIP_DRIVE_DATA.items():
+        drive, base = prof["drive"], prof["base"]
+        for sw_drive, min_lvl, new_base, _fuel in prof["switches"]:
+            if dt.get(sw_drive, 0) >= min_lvl:
+                drive, base = sw_drive, new_base
+        out[ship] = float(base) * (1.0 + DRIVE_MULT_PER_LEVEL[drive] * dt.get(drive, 0))
+    return out
+
+
+def derive_penalty_factors(drive_techs: Optional[Dict[str, int]] = None) -> Dict[str, float]:
+    """Per-ship fuel/speed penalty factors at the given drive techs."""
+    speeds = effective_ship_speed(drive_techs)
+    v_ref = speeds["battlecruiser"]
+    f_ref = SHIP_DRIVE_DATA["battlecruiser"]["fuel"]
+    factors: Dict[str, float] = {}
+    for ship, v in speeds.items():
+        s_term = math.log2(v_ref / v) if v < v_ref else 0.0
+        fuel = SHIP_DRIVE_DATA[ship]["fuel"]
+        f_term = math.log2(fuel / f_ref) if fuel > f_ref else 0.0
+        factors[ship] = min(_PENALTY_CAP, 1.0 + _PENALTY_ALPHA * s_term + _PENALTY_BETA * f_term)
+    return factors
 
 
 def fleet_penalty_multiplier(
     fleet,
     pct: float = 0.0,
+    drive_techs: Optional[Dict[str, int]] = None,
 ) -> float:
     """Return weighted-average penalty factor for fleet, scaled by pct.
 
     Computes sum(count * penalty[ship]) / sum(count) where penalty[ship]
     is linearly interpolated between 1.0 (no effect, pct=0) and
-    SHIP_FUEL_SPEED_PENALTY[ship] (max effect, pct=10). pct is clamped to
+    derive_penalty_factors(drive_techs)[ship] (max effect, pct=10). pct is clamped to
     [0, 10]; values <= 0 return 1.0 immediately (no effect).
 
     Count-weighted (not cost-weighted): a fleet of 1 BC + 1 Deathstar
@@ -399,6 +458,9 @@ def fleet_penalty_multiplier(
     pct : float
         User-facing percentage 0-10. 0 disables. 5 applies half the table.
         10 applies the table in full.
+    drive_techs : Optional[Dict[str, int]]
+        Attacker drive levels {"combustion", "impulse", "hyperspace"}.
+        None -> DEFAULT_DRIVE_TECHS.
 
     Returns
     -------
@@ -410,12 +472,13 @@ def fleet_penalty_multiplier(
         return 1.0
     if pct > 10.0:
         pct = 10.0
+    factors = derive_penalty_factors(drive_techs)
     total = 0
     weighted = 0.0
     for ship, count in fleet.items():
         if count <= 0:
             continue
-        base = SHIP_FUEL_SPEED_PENALTY.get(ship, 1.0)
+        base = factors.get(ship, 1.0)
         factor = 1.0 + (base - 1.0) * (pct / 10.0)
         weighted += factor * count
         total += count

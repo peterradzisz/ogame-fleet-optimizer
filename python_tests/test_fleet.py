@@ -241,7 +241,7 @@ def test_rip_does_not_overflow_python_int() -> None:
     # 100,000 RIP × 10,000,000 = 1e12 — fits trivially in Python int.
     assert fleet_value({"deathstar": 100_000}) == 1_000_000_000_000
 from ogame_optimizer.core.fleet import (
-    SHIPS_COST, SHIP_FUEL_SPEED_PENALTY, fleet_penalty_multiplier,
+    SHIPS_COST, SHIP_DRIVE_DATA, derive_penalty_factors, fleet_penalty_multiplier,
 )
 import pytest
 
@@ -250,28 +250,35 @@ def test_fleet_penalty_multiplier_disabled_by_default():
     assert fleet_penalty_multiplier({"light_fighter": 1000, "battlecruiser": 50}, pct=0) == 1.0
 
 def test_fleet_penalty_multiplier_pure_ships():
-    for ship in ("light_fighter", "heavy_fighter", "cruiser", "battlecruiser"):
-        assert fleet_penalty_multiplier({ship: 100}, pct=10) == pytest.approx(1.0)
-    for ship, expected in SHIP_FUEL_SPEED_PENALTY.items():
-        if expected == 1.0:
-            continue
+    # A pure fleet of one ship gets exactly that ship's derived factor.
+    default_factors = derive_penalty_factors()
+    for ship in SHIP_DRIVE_DATA:
         actual = fleet_penalty_multiplier({ship: 100}, pct=10)
-        assert actual == pytest.approx(expected), f"{ship}: expected {expected}, got {actual}"
+        assert actual == pytest.approx(default_factors[ship]), ship
+    # Reference (BC) and the fastest+cheapest hull stay penalty-free.
+    assert fleet_penalty_multiplier({"battlecruiser": 7}, pct=10) == pytest.approx(1.0)
+    assert fleet_penalty_multiplier({"espionage_probe": 7}, pct=10) == pytest.approx(1.0)
 
 def test_fleet_penalty_multiplier_mix():
     fl = {"battlecruiser": 50, "deathstar": 50}
-    assert fleet_penalty_multiplier(fl, pct=10) == pytest.approx(1.05)
+    f = derive_penalty_factors()
+    assert fleet_penalty_multiplier(fl, pct=10) == pytest.approx(
+        (f["battlecruiser"] + f["deathstar"]) / 2
+    )
 
 def test_fleet_penalty_multiplier_interpolation():
-    assert fleet_penalty_multiplier({"deathstar": 1}, pct=10) == pytest.approx(1.10)
-    assert fleet_penalty_multiplier({"deathstar": 1}, pct=5) == pytest.approx(1.05)
-    assert fleet_penalty_multiplier({"deathstar": 1}, pct=2) == pytest.approx(1.02)
+    f_ds = derive_penalty_factors()["deathstar"]
+    assert fleet_penalty_multiplier({"deathstar": 1}, pct=10) == pytest.approx(f_ds, abs=1e-9)
+    assert fleet_penalty_multiplier({"deathstar": 1}, pct=5) == pytest.approx((1.0 + f_ds) / 2, abs=1e-9)
+    assert fleet_penalty_multiplier({"deathstar": 1}, pct=2) == pytest.approx(1.0 + (f_ds - 1.0) * 0.2, abs=1e-9)
 
 def test_fleet_penalty_multiplier_clamps_negative():
     assert fleet_penalty_multiplier({"deathstar": 100}, pct=-5) == 1.0
 
 def test_fleet_penalty_multiplier_clamps_above_10():
-    assert fleet_penalty_multiplier({"deathstar": 100}, pct=100) == pytest.approx(1.10)
+    assert fleet_penalty_multiplier({"deathstar": 100}, pct=100) == pytest.approx(
+        derive_penalty_factors()["deathstar"]
+    )
 
 def test_fleet_penalty_multiplier_zero_count():
     fl = {"battlecruiser": 100, "deathstar": 0}
@@ -280,8 +287,8 @@ def test_fleet_penalty_multiplier_zero_count():
 def test_fleet_penalty_multiplier_empty():
     assert fleet_penalty_multiplier({}, pct=10) == 1.0
 
-def test_ship_fuel_speed_penalty_covers_all_combat_ships():
+def test_drive_data_covers_all_flyable_ships():
+    assert set(SHIP_DRIVE_DATA) == set(SHIPS_COST)
     for ship in SHIPS_COST:
-        assert ship in SHIP_FUEL_SPEED_PENALTY
         m = fleet_penalty_multiplier({ship: 100}, pct=10)
-        assert 1.0 <= m <= 1.20
+        assert 1.0 <= m <= 1.20, ship

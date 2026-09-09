@@ -78,6 +78,6 @@ def test_ui_wiring():
     js = (root / "python/ogame_optimizer/web/static/app.js").read_text(encoding="utf-8")
     assert 'id="base-wins-banner"' in idx, "banner container missing"
     assert "base_already_wins === true" in js, "app.js guard missing"
-    assert "v=20260908d" in idx, "cache-bust pin not bumped"
+    assert "v=20260908e" in idx, "cache-bust pin not bumped"
     for f in ("test_fleet_alternatives.py", "test_lf_share.py", "test_ui_costs_kills.py", "test_win_banner.py"):
-        assert "v=20260908d" in (root / "python_tests" / f).read_text(encoding="utf-8"), f"{f}: pin stale"
+        assert "v=20260908e" in (root / "python_tests" / f).read_text(encoding="utf-8"), f"{f}: pin stale"
