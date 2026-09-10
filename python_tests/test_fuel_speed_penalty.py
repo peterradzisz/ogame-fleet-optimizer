@@ -76,14 +76,19 @@ class TestUserScenario:
     def test_bc_is_reference_and_bs_only_fuel_penalised(self):
         for techs in ({"combustion": 10, "impulse": 8, "hyperspace": 10}, DEFAULT_DRIVE_TECHS):
             f = derive_penalty_factors(techs)
-            assert f["battlecruiser"] == 1.0
-            assert 1.0 < f["battleship"] < 1.03  # same speed, 2x fuel
+            # BC has the hyperspace-fuel base bonus (factor 0.99 < 1.0);
+            # BS has identical speed but higher fuel so its factor is
+            # strictly worse than BC's at any tech level.
+            assert f["battlecruiser"] == pytest.approx(0.99, abs=1e-9)
+            assert f["battlecruiser"] < f["battleship"]
+            assert f["battleship"] < 1.03
 
 
 class TestPenaltyDerivation:
     def test_default_techs_ordering_and_values(self):
         f = derive_penalty_factors()  # DEFAULT_DRIVE_TECHS
-        assert f["deathstar"] == pytest.approx(1.0997, abs=0.002)
+        # Deathstar: 1.10 speed penalty * (1 - 0.01 hyperspace bonus) ~= 1.089
+        assert f["deathstar"] == pytest.approx(1.089, abs=0.002)
         assert f["destroyer"] == pytest.approx(1.039, abs=0.002)
         assert f["recycler"] > f["destroyer"]  # slowest flyer below DS
         assert f["battleship"] > 1.0           # 2x fuel
@@ -91,10 +96,12 @@ class TestPenaltyDerivation:
         assert f["cruiser"] == pytest.approx(1.003, abs=0.002)  # faster, slightly thirstier
 
     def test_factors_bounded(self):
+        # Hyperspace-fuel ships can go down to ~0.99; slow+thirsty ships up
+        # to ~1.10; never outside [0.95, 1.15].
         for cd in (0, 10, 20, 30):
             for hd in (0, 10, 20, 30):
                 for v in derive_penalty_factors({"combustion": cd, "impulse": 8, "hyperspace": hd}).values():
-                    assert 1.0 <= v <= 1.15
+                    assert 0.95 <= v <= 1.15
 
 
 class TestMultiplier:
@@ -104,7 +111,8 @@ class TestMultiplier:
         full = fleet_penalty_multiplier(fleet, 10)
         half = fleet_penalty_multiplier(fleet, 5)
         assert half == pytest.approx((full + 1.0) / 2, abs=1e-9)
-        assert full == pytest.approx((1.0 + 1.0997) / 2, abs=0.002)
+        # (BC + DS) / 2 with the new factor table.
+        assert full == pytest.approx((derive_penalty_factors()["battlecruiser"] + derive_penalty_factors()["deathstar"]) / 2, abs=1e-9)
 
     def test_drive_techs_change_penalty(self):
         fleet = {"light_fighter": 100}
@@ -148,3 +156,57 @@ class TestApiAndUi:
             assert f'name="{n}"' in idx, f"{n} input missing"
         assert 'fd.get("drive_combustion")' in js
         assert "v=20260908e" in idx
+
+
+class TestBcPreference:
+    """Battlecruiser is the experienced-fleeter favourite (hyperspace + low
+    fuel). The bonus must make BC the lowest factor (best fitness), ahead
+    of similarly armed combat ships, without overturning combat value.
+    """
+
+    def test_bc_is_lowest_at_default_techs(self):
+        f = derive_penalty_factors()
+        assert f["battlecruiser"] <= min(
+            f["cruiser"], f["pathfinder"], f["battleship"], f["reaper"]
+        )
+        assert f["battlecruiser"] < 1.0  # has the base credit
+
+    def test_bc_beats_bs_because_fuel_is_lower(self):
+        # BS and BC have IDENTICAL speed, so speed penalty is the same;
+        # only fuel separates them. BC's 250 vs BS's 500 makes BC strictly
+        # cheaper at runtime.
+        f = derive_penalty_factors()
+        assert f["battlecruiser"] < f["battleship"]
+
+    def test_bc_beats_cruiser_at_default_techs(self):
+        # CR is faster but thirstier; BC's hyperspace bonus + lower fuel
+        # outweigh CR's speed advantage in the penalty model.
+        f = derive_penalty_factors()
+        assert f["battlecruiser"] < f["cruiser"]
+
+    def test_ds_still_heavily_penalised(self):
+        # The hyperspace bonus doesn't save Deathstar: fuel 1 is fine but
+        # the speed penalty (100 base vs 10000) dominates -> factor > 1.05.
+        f = derive_penalty_factors()
+        assert f["deathstar"] > 1.05
+
+    def test_factor_ordering_preserved(self):
+        # Old test_fleet-style ordering still holds with bonus:
+        # bc (preferred) < hyperspace-fuel ships (pf, bs) <= 1.0 < bad ships.
+        f = derive_penalty_factors()
+        assert f["battlecruiser"] < 1.0
+        assert f["battleship"] > 1.0
+        assert f["pathfinder"] < 1.0
+        assert f["deathstar"] > f["destroyer"]
+        assert f["destroyer"] > f["bomber"]
+        assert f["bomber"] > f["reaper"]
+
+    def test_bonus_scales_with_pct(self):
+        # At pct=0 the bonus AND the penalty scale to zero -> every ship 1.0.
+        fl = {"battlecruiser": 100, "deathstar": 100}
+        zero = fleet_penalty_multiplier(fl, pct=0)
+        full = fleet_penalty_multiplier(fl, pct=10)
+        assert zero == pytest.approx(1.0, abs=1e-9)
+        # Pure BC fleet at pct=10 -> 0.99 (bonus fully applied)
+        bc_only = fleet_penalty_multiplier({"battlecruiser": 100}, pct=10)
+        assert bc_only == pytest.approx(0.99, abs=1e-9)

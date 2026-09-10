@@ -393,14 +393,25 @@ SHIP_DRIVE_DATA: Dict[str, Dict] = {
     "espionage_probe": {"drive": "combustion", "base": 100_000_000, "fuel": 1, "switches": []},
 }
 
-# Calibration: factor = 1 + ALPHA*log2(v_bc/v)+ + BETA*log2(fuel/fuel_bc)+
-# clamped to [1.0, _PENALTY_CAP]. At DEFAULT_DRIVE_TECHS this yields
-# roughly: deathstar 1.10, recycler 1.05, destroyer 1.04, bomber 1.03,
-# reaper 1.03, large_cargo 1.02, battleship 1.01, light_fighter 1.008,
-# heavy_fighter 1.004, cruiser/pathfinder 1.003, probe/BC 1.00.
+# Calibration: factor = 1 - bonus + ALPHA*log2(v_bc/v)+ + BETA*log2(fuel/fuel_bc)+
+# clamped to [_PENALTY_FLOOR, _PENALTY_CAP]. Hyperspace + fuel<=500 ships
+# (BC, BS, PF) get a 1% base credit (factor 0.99 - their penalty terms).
+# At DEFAULT_DRIVE_TECHS the table yields roughly: battlecruiser 0.99
+# (lowest, preferred), battleship ~1.002, pathfinder ~0.993, probe 1.00,
+# cruiser 1.003, pathfinder 1.003, heavy_fighter 1.004, light_fighter
+# 1.008, large_cargo 1.02, bomber 1.03, reaper 1.03, recycler 1.05,
+# destroyer 1.04, deathstar 1.09.
 _PENALTY_ALPHA = 0.015  # per log2(x) slower than the BC reference
 _PENALTY_BETA = 0.012   # per log2(x) thirstier than the BC reference
 _PENALTY_CAP = 1.15
+# Hyperspace ships with reasonable fuel earn a small credit (~1%) so the
+# optimizer mirrors the experienced-fleeter preference for BC. Cruiser/HF
+# are impulse and miss this; LF/Probe are combustion and miss this. BC's
+# own fuel is the lowest among the eligible set, so it sits at the
+# bottom of the table (lowest factor = best fitness).
+_HYSPACE_BONUS = 0.01
+_HYSPACE_FUEL_MAX = 500
+_PENALTY_FLOOR = 0.95
 
 
 def effective_ship_speed(drive_techs: Optional[Dict[str, int]] = None) -> Dict[str, float]:
@@ -421,16 +432,35 @@ def effective_ship_speed(drive_techs: Optional[Dict[str, int]] = None) -> Dict[s
 
 
 def derive_penalty_factors(drive_techs: Optional[Dict[str, int]] = None) -> Dict[str, float]:
-    """Per-ship fuel/speed penalty factors at the given drive techs."""
-    speeds = effective_ship_speed(drive_techs)
+    """Per-ship fuel/speed penalty factors at the given drive techs.
+
+    Asymmetric design (rewarding good profiles, not just penalising bad):
+      - bad ships (slower OR thirstier than BC) get a factor > 1.0
+      - hyperspace ships with reasonable fuel get a base bonus (factor < 1.0)
+        so the optimizer mirrors the "BC preference" of experienced
+        fleeters without overriding combat value (battlecruiser itself sits
+        at the bottom: lowest fuel among hyperspace ships with bonus).
+      - the asymmetric bonus/penalty is then scaled linearly by pct in
+        fleet_penalty_multiplier, so pct=0 reduces everything to 1.0.
+    """
+    dt = drive_techs or DEFAULT_DRIVE_TECHS
+    speeds = effective_ship_speed(dt)
     v_ref = speeds["battlecruiser"]
     f_ref = SHIP_DRIVE_DATA["battlecruiser"]["fuel"]
     factors: Dict[str, float] = {}
-    for ship, v in speeds.items():
+    for ship, prof in SHIP_DRIVE_DATA.items():
+        # Resolve final drive (post-switch) for the bonus eligibility test.
+        drive = prof["drive"]
+        for sw_drive, min_lvl, _new_base, _fuel in prof["switches"]:
+            if dt.get(sw_drive, 0) >= min_lvl:
+                drive = sw_drive
+        v = speeds[ship]
+        fuel = prof["fuel"]
         s_term = math.log2(v_ref / v) if v < v_ref else 0.0
-        fuel = SHIP_DRIVE_DATA[ship]["fuel"]
         f_term = math.log2(fuel / f_ref) if fuel > f_ref else 0.0
-        factors[ship] = min(_PENALTY_CAP, 1.0 + _PENALTY_ALPHA * s_term + _PENALTY_BETA * f_term)
+        bonus = _HYSPACE_BONUS if (drive == "hyperspace" and fuel <= _HYSPACE_FUEL_MAX) else 0.0
+        raw = 1.0 - bonus + _PENALTY_ALPHA * s_term + _PENALTY_BETA * f_term
+        factors[ship] = min(_PENALTY_CAP, max(_PENALTY_FLOOR, raw))
     return factors
 
 

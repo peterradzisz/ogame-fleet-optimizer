@@ -255,8 +255,10 @@ def test_fleet_penalty_multiplier_pure_ships():
     for ship in SHIP_DRIVE_DATA:
         actual = fleet_penalty_multiplier({ship: 100}, pct=10)
         assert actual == pytest.approx(default_factors[ship]), ship
-    # Reference (BC) and the fastest+cheapest hull stay penalty-free.
-    assert fleet_penalty_multiplier({"battlecruiser": 7}, pct=10) == pytest.approx(1.0)
+    # BC has the hyperspace-fuel profile bonus (factor 0.99); the cheapest
+    # hull (probe, fuel 1) gets no penalty because it is even cheaper to
+    # run than BC but its drive is combustion not hyperspace.
+    assert fleet_penalty_multiplier({"battlecruiser": 7}, pct=10) == pytest.approx(0.99, abs=1e-9)
     assert fleet_penalty_multiplier({"espionage_probe": 7}, pct=10) == pytest.approx(1.0)
 
 def test_fleet_penalty_multiplier_mix():
@@ -282,7 +284,8 @@ def test_fleet_penalty_multiplier_clamps_above_10():
 
 def test_fleet_penalty_multiplier_zero_count():
     fl = {"battlecruiser": 100, "deathstar": 0}
-    assert fleet_penalty_multiplier(fl, pct=10) == pytest.approx(1.0)
+    # Pure BC fleet -> exactly the BC base factor (hyperspace bonus).
+    assert fleet_penalty_multiplier(fl, pct=10) == pytest.approx(0.99, abs=1e-9)
 
 def test_fleet_penalty_multiplier_empty():
     assert fleet_penalty_multiplier({}, pct=10) == 1.0
@@ -291,4 +294,6 @@ def test_drive_data_covers_all_flyable_ships():
     assert set(SHIP_DRIVE_DATA) == set(SHIPS_COST)
     for ship in SHIPS_COST:
         m = fleet_penalty_multiplier({ship: 100}, pct=10)
-        assert 1.0 <= m <= 1.20, ship
+        # Hyperspace + fuel<=500 ships (BC, BS, PF) get a base credit
+        # (~0.99); everything else >= 1.0 up to ~1.10.
+        assert 0.95 <= m <= 1.20, ship
